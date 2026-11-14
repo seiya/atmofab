@@ -1296,7 +1296,7 @@ PINNED_RENDER: dict[str, str] = {
     # file's `CASES ?=` default lists the base cases (`Conductor.read_base_case_ids`, a member).
     "render-19": "25d4f625ec8f39ab1d3df26ce44666785e6c801846c18134be12b7d1c0b9b7cb",
     # render-20: every control file declares LIBINC/LIBS and the flag string references $(LIBINC) (issue #644 P1).
-    "render-20": "6c696db8c1a6c3d4fe02ac65dd9eccb13b9d2d03935d809039a45a6db24313f5",
+    "render-20": "9beddb37541b9193256787b04d308b31a230aebb066edc8b9add7fe605ca0665",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:
@@ -1611,7 +1611,7 @@ PINNED_BUILD: dict[str, str] = {
     # reader of its output are the same module and move together, and no build output moves.
     "build-4": "a26c5e752d6e83f924bb8401485db6dfccf2c1d83f673aa44b90f55f9da5d20e",
     # build-5: the library variables on every build, the post-build symbol checks, the library members (issue #644 P1).
-    "build-5": "6e48ec7a6fcdfc896556b676f2f968fccaace0ef5139a6902718ff32de2ef8cd",
+    "build-5": "061cd7e29290976e3858f2c8b953f756e44d2544d41ed4ec145bf4b1587e3dc3",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
@@ -1963,7 +1963,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # file of a loop node carries `restart.step`.
     "execute-18": "455401740956c07c7757572260025941d80ab30f009777f32e08a54ac14bea97",
     # execute-19: the loader path of the Build's library directories on every run, the library members (issue #644 P1).
-    "execute-19": "8d1d4a2981379a0e58269a9e3054c589ba72bd4695baf74bc9e00a5eb9e7e14d",
+    "execute-19": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

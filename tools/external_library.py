@@ -513,7 +513,8 @@ def facts_text(declarations: Sequence[LibraryDeclaration]) -> str:
              "This node's `deps.yaml` declares the external libraries below. Its sources may "
              "reach these libraries only, through the modules and procedures listed. Build "
              "refuses an object that uses a symbol of another library on the link line, defines "
-             "a symbol a library exports, or reaches none of a library it declares.", ""]
+             "a symbol a library on the link line exports, or reaches none of a library it "
+             "declares.", ""]
     for d in declarations:
         lines.append(f"- {d.library_id}: modules [{', '.join(d.modules)}]; "
                      f"procedures [{', '.join(d.procedures)}]")

@@ -1180,7 +1180,7 @@ PINNED: dict[str, str] = {
     # storage kept only for reuse, the Fortran fragment's `use` and `!$` clause).
     "leaf-98": "1aaadcc256f0eef57948967780e84af0cb28debe21d6641ba099bfc993fe8de1",
     # leaf-99: the external-library wording of the generate and compile templates and fragments (issue #644 P1).
-    "leaf-99": "8f2a31d28130a81b8717010a8c4be85dd7a2d2555d821e51efd15ee80b613b9f",
+    "leaf-99": "25b1498d5cc7545367d609664de8aba0080676467cd5fcae2a8c3c935e86216a",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1228,7 +1228,7 @@ PINNED_READER: dict[str, str] = {
     # before it shipped (review round 2: storage kept only for reuse is not such state).
     "generate-verify-9": "46680740182d49d32081253a0516da8d488f8d885199a86255c0600e68986e61",
     # generate-verify-10: the external-library wording of the verify templates and the `## External libraries` block (issue #644 P1).
-    "generate-verify-10": "24dbfdcea35f7c56e4788bc008eab56447d82b118d4ed857d8d6581ded5eabde",
+    "generate-verify-10": "a9ee0f99c193bab76be0e414d3650692bca96c054297bd23e7f668148f992f24",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
@@ -1246,7 +1246,7 @@ PINNED_READER: dict[str, str] = {
     # process ran and the driver's restart point.
     "validate-judge-7": "d15e1b969fb6b3ddbf5062fc9938ac6ab95907b12b58a736090eb59334cf4c7b",
     # validate-judge-8: the judge reads the `## External libraries` block of DEPENDENCIES.md (issue #644 P1).
-    "validate-judge-8": "f0f706c9670db3f63307f498bd0274c0559d8cc4f3f835449cef1f83cc5e39d7",
+    "validate-judge-8": "bda4693f18f623c24da88bf8a8b2101c0cfe50524cfc1713b9ef909732c059c3",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

@@ -260,7 +260,8 @@ any member runs. A missing or malformed declaration, or a malformed `libraries` 
 `spec` of the closure is refused as `library_declaration_invalid` (exit code 2) on every run, a
 Compile-only one included (`docs/SPEC.md` requirement 16).
 
-What the build and validate keys hold of a library is the content of its declared files at the
+What the build and validate keys hold of a library is its library directories (so moving it to
+another directory re-runs Build and Validate) and the content of its declared files at the
 site — the file the linker takes for each link name, the file the loader takes for it, and each
 declared module file — and not what those files load in turn: replacing a library the declared
 files load (a C library under a binding of another language, a lower-level numerical library

@@ -144,7 +144,7 @@ releases/
     link: [<link name>, ...]     # the link names, in link order; at least one
     ```
 
-    Each list holds distinct non-empty strings, and no other key is admitted (`tools/external_library.py` `load_declaration`). The host passes the link names on as opaque tokens; what they mean to a linker is the target compiler's (`docs/BACKEND_BOUNDARY.md`).
+    Each list holds distinct non-empty strings, and no other key is admitted (`tools/external_library.py` `load_declaration`). The symbol checks of `Build` read the exports of the files the link names resolve to, and of nothing those files load: list a library the declared one loads in turn under `link:` too when a node must neither call nor replace it. The host passes the link names on as opaque tokens; what they mean to a linker is the target compiler's (`docs/BACKEND_BOUNDARY.md`).
 
 ### Design Policy
 - A `problem spec` defines the integration scenario and guarantees the consistency of multiple `component`. A `problem spec` may compose other `problem`s: its `__step` calls each member's `__step` and its own direct `component`s, with call intervals and a process switched at run time as `in` arguments. This is the first form of the assembled model's driver.
