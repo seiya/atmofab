@@ -52,6 +52,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from collections.abc import Sequence
 from typing import NamedTuple
 
 from tools import build_runtime
@@ -144,9 +145,13 @@ def _build_compiler(target) -> str:
 
 
 def required_host_executables(
-    selection: dict[str, str],
+    selection: dict[str, str], closure_libraries: Sequence[str] = (),
 ) -> tuple[HostExecutable, ...]:
-    """Every program the resolved selection needs on the host, in probe order, without repeats."""
+    """Every program the resolved selection needs on the host, in probe order, without repeats.
+    `closure_libraries` are the external libraries the run's closure declares (issue #644):
+    when there is one, the programs the compiler's `library_binary` runs over the build's
+    objects (`EXECUTABLES`) are required too, so a host without them is refused at startup
+    rather than at Build."""
 
     found: list[HostExecutable] = []
     seen: set[str] = set()
@@ -180,6 +185,14 @@ def required_host_executables(
     wrapper = _parallel_capability_module(parallel, "compiler_wrapper") if parallel else None
     if wrapper is not None:
         add("parallel", parallel, str(wrapper.COMPILER_WRAPPER))
+
+    if closure_libraries:
+        from tools.backends import registry as backend_registry
+
+        if backend_registry.provides("compiler", compiler, "library_binary"):
+            for executable in backend_registry.capability_module(
+                    "compiler", compiler, "library_binary").EXECUTABLES:
+                add("compiler", compiler, str(executable))
 
     return tuple(found)
 
@@ -494,7 +507,7 @@ def required_python_modules(selection: dict[str, str]) -> tuple[tuple[str, str],
 
 
 def missing_host_executables(
-    selection: dict[str, str],
+    selection: dict[str, str], closure_libraries: Sequence[str] = (),
 ) -> tuple[HostExecutable, ...]:
     """Those of `required_host_executables` this host cannot resolve on `PATH`.
 
@@ -503,6 +516,6 @@ def missing_host_executables(
     """
     return tuple(
         item
-        for item in required_host_executables(selection)
+        for item in required_host_executables(selection, closure_libraries)
         if shutil.which(item.executable) is None
     )

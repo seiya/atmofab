@@ -11565,6 +11565,29 @@ class Conductor:
             elif not (bin_checked / exe).is_file():
                 binary_missing = checked_missing = True
                 ok = False
+        # The post-build library symbol checks (issue #644), on a build that left its binary,
+        # BEFORE a passing record is written: the objects this node's leaf authored import no
+        # symbol of a library the node does not declare, define none of one, and import at
+        # least one of each library it declares. A violation is the leaf's (it wrote the
+        # object): `validate_post_build_violation`, routed to Generate's restart.
+        library_check: dict[str, Any] | None = None
+        library_violation: str | None = None
+        if ok and libraries:
+            # The objects THIS node's leaf authored: every object the build left except the
+            # staged closure's (checked in their own Builds) and the host-rendered runner's.
+            from tools import external_library as xl
+            facts = self._language_facts()
+            foreign = {control_file.object_name(facts.model_basename(spec_id_of(nk)))
+                       for nk in self._dependency_closure_nodes(refs)}
+            if self._conductor_authors_runner(refs):
+                foreign.add(control_file.object_name(self._runner_basename(refs)))
+            own_objects = sorted(p for p in obj_dir.iterdir()
+                                 if p.is_file() and p.suffix == ".o" and p.name not in foreign)
+            library_check, library_violation = xl.symbol_check(
+                self.target, own_objects, libraries,
+                xl.node_library_ids(self.repo_root, refs.spec_path))
+            if library_violation is not None:
+                ok = False
         # `command_log_ref` from the handler is cwd-relative (`_path_to_ref` uses
         # Path.cwd()), which is unreliable for the in-process caller — derive it from
         # our repo_root + the known canonical placement instead (`BUILDS_IN_SOURCE`, checked
@@ -11656,10 +11679,18 @@ class Conductor:
             "dependency_check": {"direct_deps": dep_keys,
                                  "resolved": "match" if ok else "unresolved",
                                  "closure_bindings": closure_bindings},
+            # The closure's external libraries and the symbol checks over the node's own
+            # objects (issue #644); null when the closure declares none.
+            "library_check": library_check,
             "failure_category": None,
             "failure_excerpt": None,
         }
-        if binary_missing:
+        if library_violation is not None:
+            binary_meta["failure_category"] = "validate_post_build_violation"
+            binary_meta["last_fail_reason"] = "library_symbol_check"
+            binary_meta["failure_excerpt"] = library_violation
+            stderr += "\n[post_build library check fail]\n" + library_violation + "\n"
+        elif binary_missing:
             # Control-file build-rule defect -> Generate restart (`BUILD_FAILURE_ROUTING`).
             category, rule = execute.BINARY_MISSING
             binary_meta["failure_category"] = category
