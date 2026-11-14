@@ -3224,6 +3224,14 @@ def _run_main(
             sites_config=sites_config,
         )
 
+    # The closure's external libraries (issue #644), decided before anything of the run is
+    # written: a node that cannot use one here ends `library_unavailable`, with no pipeline.
+    library_verdict = _library_verdict(repo_root, spec_ref, target_profile, until_phase)
+    if library_verdict is not None:
+        _emit_unlogged_event(library_verdict, args.stdout_format)
+        return (LIBRARY_UNAVAILABLE_EXIT if library_verdict["status"] == "library_unavailable"
+                else 2)
+
     # Cold-start guard (single node): a fresh run of a spec that still has a
     # non-terminal orchestration either collides with a live driver (refuse) or
     # silently discards a resumable checkpoint (warn, naming the resume command).
@@ -4521,10 +4529,12 @@ def _resolve_dependency_closure(
         _load_spec_catalog,
         _matching_dep_versions,
         _parse_dep_entries,
+        _parse_library_entries,
         _read_deps_yaml,
         expand_profile_dependencies,
         resolve_spec_ref_for,
     )
+    from tools.external_library import declaration_violation as library_declaration_violation
     from tools.spec_input_gates import (
         infra_dep_declared_violation,
         problem_dep_on_non_problem_violation,
@@ -4675,6 +4685,20 @@ def _resolve_dependency_closure(
                 "detail": f"{spec_ref}: {_infra_violation}",
             }
             return
+        # The external libraries the spec declares (issue #644): each names a usable
+        # declaration under spec/libraries/, on every visited spec for the reason above.
+        _library_ids, _libraries_well_formed = _parse_library_entries(deps_doc)
+        if not _libraries_well_formed:
+            error = {
+                "reason": "dependency_deps_malformed",
+                "detail": f"{spec_ref}/deps.yaml has a malformed `libraries` list",
+            }
+            return
+        _library_violation = library_declaration_violation(repo_root, _library_ids)
+        if _library_violation:
+            error = {"reason": "library_declaration_invalid",
+                     "detail": f"{spec_ref}: {_library_violation}"}
+            return
         # The system tier, Part 1: a `problems:` entry is admitted on a `problem` only, by the
         # CATALOG's kind. On every visited spec, an already-ready member included, for the
         # reason the infrastructure sibling above gives. A kind that came from the spec's own
@@ -4805,6 +4829,72 @@ def _resolve_dependency_closure(
             }
         )
     return ordered, None
+
+
+#: The exit code of a run whose node is `library unavailable` (issue #644): an external library
+#: its closure declares cannot be used for the target at its site, decided before any phase.
+#: Unused by every other exit of this driver (0, 2, 120, 130, 143) and of its members.
+LIBRARY_UNAVAILABLE_EXIT = 5
+
+
+def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfile | None,
+                     until_phase: str) -> dict[str, Any] | None:
+    """Whether the external libraries `spec_ref`'s closure declares can be used by a run for
+    `target_profile` (issue #644), decided before any phase from the declarations, the target
+    and the operator's `sites.yaml` alone — no leaf runs before it, and no leaf output is among
+    its inputs. None when the run stops at Compile (target-free), when no target is resolved,
+    when the closure declares no library, or when every library resolves.
+
+    Otherwise an event: `status: "library_unavailable"` (the library is for another language,
+    `library_language_mismatch`, or the site does not list it, `library_not_at_site`), or
+    `status: "fail"` for an operator configuration defect the run is refused on (exit 2): a
+    remote site (`library_at_remote_site`), a compiler without the library capabilities
+    (`library_capability_missing`), a site entry whose files do not resolve
+    (`site_library_unresolved`), an unreadable `sites.yaml`, or a host without the programs
+    the post-build checks run (`missing_required_host_tools`). A closure that does not resolve
+    is left to the gates that report it."""
+    from tools import external_library as xl
+    from tools.execution_sites import SitesConfigError
+    if target_profile is None or _normalize_phase(until_phase).lower() == "compile":
+        return None
+    ordered, error = _resolve_dependency_closure(repo_root, spec_ref, target_profile)
+    if error is not None:
+        return None
+    try:
+        ids = xl.closure_library_ids(repo_root, spec_ref, [n["spec_ref"] for n in ordered])
+        declarations = [xl.load_declaration(repo_root, i) for i in ids]
+    except xl.LibraryDeclarationError as exc:
+        return {"status": "fail", "reason": "library_declaration_invalid", "detail": str(exc),
+                "spec_ref": spec_ref}
+    if not declarations:
+        return None
+    try:
+        xl.resolve_closure(repo_root, target_profile, declarations)
+    except xl.LibraryUnusable as exc:
+        site = None
+        try:
+            site = xl.site_for_target(repo_root, target_profile.target_id).site_id
+        except (SitesConfigError, TargetProfileError):
+            pass
+        base = {"reason": exc.reason, "library_id": exc.library_id, "site": site,
+                "target_id": target_profile.target_id, "spec_ref": spec_ref,
+                "detail": str(exc)}
+        if exc.reason in xl.UNAVAILABLE_REASONS:
+            return {"status": "library_unavailable", **base}
+        return {"status": "fail", **base}
+    except (SitesConfigError, TargetProfileError) as exc:
+        return {"status": "fail", "reason": "sites_config_invalid", "detail": str(exc),
+                "spec_ref": spec_ref}
+    from tools.host_prerequisites import missing_host_executables
+    missing = [item.executable for item in missing_host_executables(
+        _host_probe_selection(target_profile), [d.library_id for d in declarations])]
+    if missing:
+        return {"status": "fail", "reason": "missing_required_host_tools",
+                "detail": (f"missing host tools: {','.join(missing)} — the closure declares "
+                           f"external libraries, and the post-build library checks run them "
+                           f"(see docs/RUNBOOK.md#0-1)"),
+                "missing": missing, "spec_ref": spec_ref, "docs_ref": "docs/RUNBOOK.md#0-1"}
+    return None
 
 
 def _required_dependency_stages(dep_until_phase: str) -> list[str]:
@@ -5585,6 +5675,27 @@ def _run_with_dependency_closure(
     # run launched inside that window is precisely what the guard must catch.
 
     dependency_runs: list[dict[str, Any]] = []
+    # The external libraries (issue #644), before any member runs: a member that cannot use
+    # one here is `library_unavailable` — recorded, never run and never `skipped` (which means
+    # ready). Its consumers are unavailable with it, since their closures hold it; so is the
+    # target, whose verdict below ends the run with LIBRARY_UNAVAILABLE_EXIT once every member
+    # that can run has. A configuration defect refuses the whole run.
+    runnable: list[dict[str, Any]] = []
+    for node in ordered:
+        verdict = _library_verdict(repo_root, node["spec_ref"], target_profile, dep_until_phase)
+        if verdict is None:
+            runnable.append(node)
+        elif verdict["status"] == "library_unavailable":
+            dependency_runs.append({
+                "node": f"{node['spec_kind']}/{node['spec_id']}@{node['spec_versions'][0]}",
+                "spec_ref": node["spec_ref"], "skipped": False, "status": "library_unavailable",
+                "reason": verdict["reason"], "library_id": verdict["library_id"],
+                "site": verdict["site"]})
+        else:
+            _emit_unlogged_event({**verdict, "dependency_runs": dependency_runs,
+                                  "target_spec_ref": target_spec_ref}, stdout_format)
+            return 2
+    ordered = runnable
     if jobs > 1:
         rc = _run_closure_members_parallel(
             repo_root=repo_root, ordered=ordered, jobs=jobs, dep_until_phase=dep_until_phase,
@@ -5868,6 +5979,15 @@ def _run_with_dependency_closure(
                 stdout_format,
             )
             return 2
+
+    # The target's own libraries verdict (issue #644): its closure holds every member, so a
+    # member found unavailable above makes it unavailable too.
+    target_verdict = _library_verdict(repo_root, target_spec_ref, target_profile, until_phase)
+    if target_verdict is not None:
+        _emit_unlogged_event({**target_verdict, "dependency_runs": dependency_runs,
+                              "target_spec_ref": target_spec_ref}, stdout_format)
+        return (LIBRARY_UNAVAILABLE_EXIT
+                if target_verdict["status"] == "library_unavailable" else 2)
 
     # All dependencies are ready — run the target node, carrying the summary. On
     # closure-aware resume, reuse the closure id as the target orchestration id and
