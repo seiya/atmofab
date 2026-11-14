@@ -236,7 +236,7 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 A run that goes past `Compile` and whose closure declares an `external library` (`docs/GLOSSARY.md`;
 the declaration is `docs/SPEC.md` requirement 16, the site's `libraries:` entry
 `docs/ORCHESTRATION.md` §Execution sites) is decided by `tools/run_workflow.py` after the checks
-above and before anything of the run is written. A run that stops at `Compile` is not asked:
+above and before any `phase` of the node runs. A run that stops at `Compile` is not asked:
 Compile is target-free. The questions are asked in this order, and the first that answers ends the run:
 
 | outcome | exit | what it means |
@@ -251,7 +251,9 @@ Exit code 5 is `tools/run_workflow.py`'s own (`LIBRARY_UNAVAILABLE_EXIT`); it is
 static validator's rc 5 of §3-1. Under `--with-deps` every member is asked before any member runs:
 a member that is `library unavailable` is recorded in `dependency_runs` with
 `status: library_unavailable`, its reason, `library_id` and `site`, never as `skipped`, and is not
-run; the other members run; the target, whose closure holds that member, then ends
+run; the other members run; the target — asked before any member, so a `status: fail` row of
+its own refuses the run before a member is billed — then, holding that member in its closure,
+ends
 `library_unavailable` with exit code 5 when no member failed (a failed member's own exit code
 otherwise). A member that hits a `status: fail` row refuses the whole run with exit code 2 before
 any member runs. A missing or malformed declaration, or a malformed `libraries` list, of any

@@ -5686,6 +5686,13 @@ def _run_with_dependency_closure(
     # ready). Its consumers are unavailable with it, since their closures hold it; so is the
     # target, whose verdict below ends the run with LIBRARY_UNAVAILABLE_EXIT once every member
     # that can run has. A configuration defect refuses the whole run.
+    # The target first: a configuration refusal of its own must stop the run before any
+    # member is billed. Its `library_unavailable` is reported after the members that can run.
+    target_verdict = _library_verdict(repo_root, target_spec_ref, target_profile, until_phase)
+    if target_verdict is not None and target_verdict["status"] != "library_unavailable":
+        _emit_unlogged_event({**target_verdict, "dependency_runs": dependency_runs,
+                              "target_spec_ref": target_spec_ref}, stdout_format)
+        return 2
     runnable: list[dict[str, Any]] = []
     for node in ordered:
         verdict = _library_verdict(repo_root, node["spec_ref"], target_profile, dep_until_phase)
@@ -5988,12 +5995,10 @@ def _run_with_dependency_closure(
 
     # The target's own libraries verdict (issue #644): its closure holds every member, so a
     # member found unavailable above makes it unavailable too.
-    target_verdict = _library_verdict(repo_root, target_spec_ref, target_profile, until_phase)
     if target_verdict is not None:
         _emit_unlogged_event({**target_verdict, "dependency_runs": dependency_runs,
                               "target_spec_ref": target_spec_ref}, stdout_format)
-        return (LIBRARY_UNAVAILABLE_EXIT
-                if target_verdict["status"] == "library_unavailable" else 2)
+        return LIBRARY_UNAVAILABLE_EXIT
 
     # All dependencies are ready — run the target node, carrying the summary. On
     # closure-aware resume, reuse the closure id as the target orchestration id and

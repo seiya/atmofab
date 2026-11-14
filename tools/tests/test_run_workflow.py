@@ -5999,6 +5999,15 @@ class DependencyClosureTests(unittest.TestCase):
         self.assertEqual((record["status"], record["skipped"], record["library_id"]),
                          ("library_unavailable", False, "vend"))
 
+    def test_a_target_s_own_configuration_refusal_stops_the_closure_before_any_member(
+            self) -> None:
+        """Round 1, axis B F1: the target's verdict is asked before any member is run."""
+        rc, captured, stdout = self._drive_with_verdicts({"spec/problem/a": {
+            "status": "fail", "reason": "site_library_unresolved", "detail": "d"}})
+        self.assertEqual((rc, captured), (2, []))
+        self.assertEqual(json.loads(stdout.strip().splitlines()[-1])["reason"],
+                         "site_library_unresolved")
+
     def test_a_library_configuration_refusal_stops_the_closure_before_any_member(
             self) -> None:
         rc, captured, stdout = self._drive_with_verdicts({"spec/component/b": {
