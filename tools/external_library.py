@@ -422,8 +422,9 @@ def symbol_check(target: Any, objects: Sequence[Path], resolved: Sequence[Resolv
       declare exports. On a target whose harness links an I/O library every node links it, and
       a kernel that called it could rewrite a capture a predicate judges: the leaf would be
       closer to reporting done (`AGENTS.md` §Development premises).
-    * `library_symbol_interposed` — an object defines a global symbol such a library exports,
-      which takes the library's place at link time.
+    * `library_symbol_interposed` — an object defines a global symbol a library on the link
+      line exports, declared or not, which takes the library's place at link time (for a
+      declared library it would also satisfy the unused check with the leaf's own code).
     * `library_declared_unused` — the node declares a library and its objects import no symbol
       it exports. A call behind a branch that is false at run time still imports the symbol
       and passes: whether the library is USED is `Generate.verify`'s to judge.
@@ -441,20 +442,27 @@ def symbol_check(target: Any, objects: Sequence[Path], resolved: Sequence[Resolv
     for r in resolved:
         library_id = r.declaration.library_id
         exported = set().union(*(binary.exports(path) for _name, path in r.link_files))
+        # Interposition is refused for every library on the link line, a declared one too:
+        # an object defining a declared library's symbol would satisfy the unused check below
+        # with the leaf's own code in the library's place.
+        hits = defined & exported
+        if hits:
+            violations.append(
+                f"library_symbol_interposed: the node's objects define {sorted(hits)[:10]}, "
+                f"which library {library_id!r} exports; reach the library, never replace it")
         if library_id in declared_set:
             if not imported & exported:
                 violations.append(
                     f"library_declared_unused: deps.yaml declares library {library_id!r} and "
-                    f"the node's objects import no symbol it exports; call it, or remove the "
-                    f"declaration")
+                    f"the node's objects import no symbol it exports; the node's spec declares "
+                    f"the library for the computation it asks of it, so reach it there")
             continue
-        for code, verb, hits in (("library_symbol_not_declared", "import", imported & exported),
-                                 ("library_symbol_interposed", "define", defined & exported)):
-            if hits:
-                violations.append(
-                    f"{code}: the node's objects {verb} {sorted(hits)[:10]} of library "
-                    f"{library_id!r}, which the node does not declare; a node reaches only the "
-                    f"libraries its own deps.yaml declares")
+        hits = imported & exported
+        if hits:
+            violations.append(
+                f"library_symbol_not_declared: the node's objects import {sorted(hits)[:10]} "
+                f"of library {library_id!r}, which the node does not declare; a node reaches "
+                f"only the libraries its own deps.yaml declares")
     record = {
         "libraries": [r.declaration.library_id for r in resolved],
         "declared": sorted(declared_set),

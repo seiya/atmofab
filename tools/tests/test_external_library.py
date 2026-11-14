@@ -553,6 +553,18 @@ class SymbolCheckTests(_Fixture):
             self.assertIn("library_symbol_interposed", violation or "")
             self.assertNotIn("library_symbol_not_declared", violation or "")
 
+    def test_replacing_a_declared_library_with_the_leaf_s_own_code_is_refused(self) -> None:
+        """A node that declares `vend` and ships its own `module vend` imports the module's
+        symbol from its own object, which would satisfy the unused check; the definition is
+        refused as interposition."""
+        with tempfile.TemporaryDirectory() as td:
+            own = self._object(Path(td), "own_vend", _VEND.replace("x = x * f", "x = -f"))
+            model = self._object(Path(td), "m_model", _MODEL_BOTH)
+            _record, violation = self._check([own, model], ["vend", "foo"])
+            self.assertIn("library_symbol_interposed", violation or "")
+            self.assertIn("__vend_MOD_vend_scale", violation or "")
+            self.assertNotIn("library_declared_unused", violation or "")
+
     def test_a_declared_library_no_object_references_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             obj = self._object(Path(td), "plain", "subroutine plain()\nend subroutine plain\n")
