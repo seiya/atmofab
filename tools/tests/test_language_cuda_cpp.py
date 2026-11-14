@@ -2675,9 +2675,10 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertEqual("nvcc", registry.linter_for_language("cuda_cpp"))
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         self.assertEqual({"interface_prototypes", "runner_import", "types_and_parameters",
-                          "gate_guard_examples"},
+                          "gate_guard_examples", "external_library_use"},
                          set(prompts.fragments("generate_generate_harness")))
-        self.assertEqual({"host_rendered_scope"}, set(prompts.fragments("generate_verify_harness")))
+        self.assertEqual({"host_rendered_scope", "external_library_use"},
+                         set(prompts.fragments("generate_verify_harness")))
         # The physics templates' fragments (R4-b PR-6): the same marker set as the Fortran
         # files, so a template composed for either language resolves every marker.
         fortran = registry.capability_module("language", "fortran", "prompt_fragments")
