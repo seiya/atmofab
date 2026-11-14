@@ -23,6 +23,15 @@ ignored-status:
     - old: "    solved = (info == 0)\n"
       new: "    solved = .true.\n"
 
+status-compared-with-order:
+  title: >-
+    `solved` is false only when the library's status equals the order (a zero LAST pivot), so a
+    zero pivot met earlier is reported as solved
+  by: [l0_singular_xfail]
+  patches:
+    - old: "    solved = (info == 0)\n"
+      new: "    solved = (info /= n)\n"
+
 wrong-leading-dimension:
   title: >-
     the copy of the matrix is kept in storage with one row more than the leading dimension

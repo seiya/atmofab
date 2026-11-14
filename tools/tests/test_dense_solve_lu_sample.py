@@ -178,7 +178,8 @@ class DefectRowsTest(unittest.TestCase):
         row's. So a row added to the file is run, never only listed."""
         rows = {name.removeprefix(_DEFECT_ROW) for name in dir(DenseSolveLuSampleTest)
                 if name.startswith(_DEFECT_ROW)}
-        self.assertEqual(rows, {"transposed_matrix", "ignored_status", "wrong_leading_dimension"})
+        self.assertEqual(rows, {"transposed_matrix", "ignored_status", "status_compared_with_order",
+                                "wrong_leading_dimension"})
         self.assertEqual({m for m, row in MUTANTS.items() if not row["by"]},
                          {"library-never-reached"})
 

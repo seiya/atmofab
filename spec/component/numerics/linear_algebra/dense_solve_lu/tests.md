@@ -26,10 +26,10 @@ The comparison with theory is the declared and closed-form solutions of §5. The
 - The family cases `l0_circulant_n8`, `l0_circulant_n32` and `l0_circulant_n128` use `n=8`, `n=32` and `n=128`. With `m(i, j) = (j - i) mod n`, the residue in `0..n-1`, the matrix is `a(i, j) = n * delta(i, j) + m(i, j) / n`, where `delta(i, j)` is `1` when `i = j` and `0` otherwise, and every element of `b` is `n + (n - 1) / 2`. Every row of the matrix sums to that value, so the solution is `x(i) = 1` for every `i`. Each order is a power of two, so every element of `a` and `b` is represented exactly. The matrix is strictly diagonally dominant: its condition number in the maximum norm is below `3` at every order. Every column of the matrix sums to the same value as every row, so the family does not separate a transposed matrix; the declared-solution cases do.
 - The abnormal cases each meet one refusal of the Controlled Spec §4 alone.
   - `l0_n0`: `n=0`, the invalid order at its boundary. Its state has no cell.
-  - `l0_singular_n2`: `n=2`, `a = [[1, 2], [2, 4]]`, `b = [1, 2]`. The second equation is twice the first.
-  - `l0_singular_n3`: `n=3`, `a = [[1, 0, 1], [0, 1, 1], [1, 1, 2]]`, `b = [1, 1, 2]`. The third equation is the sum of the first two, and the zero pivot arises at the last column.
+  - `l0_singular_n2`: `n=2`, `a = [[1, 2], [2, 4]]`, `b = [1, 2]`. The second equation is twice the first, and the zero pivot is the last: the library's status equals the order.
+  - `l0_singular_first_column`: `n=3`, `a = [[0, 1, 2], [0, 3, 4], [0, 5, 7]]`, `b = [1, 1, 2]`. The first unknown has no coefficient, and the zero pivot is the first: the library's status is `1`, below the order.
 
-  Every element of the two singular matrices is a small integer and every multiplier of their elimination is `0`, `1`, `-1` or `1/2`, so every intermediate is represented exactly and the zero pivot is exact in floating point, whichever of two rows of equal magnitude the factorization takes.
+  Each zero pivot is exact in floating point. In `l0_singular_n2` the pivot of the first column is `2`, the one multiplier is `1/2`, and the last pivot is `2 - 4/2 = 0`. In `l0_singular_first_column` every element of the first column is `0`.
 
 ## 3. Execution-control rules
 `N/A`: this `component` solves one system per call and defines no time-stepping or iteration. Execution control belongs to the caller.
@@ -77,7 +77,7 @@ The predicate grammar holds no product of a matrix and a vector, so the residual
   - `expected_outcome`: `xfail`
   - `xfail_condition`: the factorization meets an exactly zero pivot
   - `quantities`: `solved`
-  - `judgment`: on `l0_singular_n2` and `l0_singular_n3`, the `operation` reports the library's positive status: `solved == 0`, in the failure direction. A kernel that does not read the status reports `solved == 1` on both. The cross-target judgment is not applied.
+  - `judgment`: on `l0_singular_n2` and `l0_singular_first_column`, the `operation` reports the library's positive status: `solved == 0`, in the failure direction. A kernel that does not read the status reports `solved == 1` on both; one that compares the status with the order, or reads the last diagonal element of the factor in its place, reports `solved == 1` on `l0_singular_first_column`. The cross-target judgment is not applied.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when every predicate of the test holds.

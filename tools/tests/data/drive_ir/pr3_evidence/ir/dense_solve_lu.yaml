@@ -138,7 +138,7 @@ case:
       - 1.0
       - 2.0
       x: -999.0
-  - case_id: l0_singular_n3
+  - case_id: l0_singular_first_column
     inputs:
       system:
         n: 3
@@ -146,15 +146,15 @@ case:
       test_profile_version: 0.1.0
     initial_state:
       a:
-      - - 1.0
-        - 0.0
-        - 1.0
       - - 0.0
         - 1.0
-        - 1.0
-      - - 1.0
-        - 1.0
         - 2.0
+      - - 0.0
+        - 3.0
+        - 4.0
+      - - 0.0
+        - 5.0
+        - 7.0
       b:
       - 1.0
       - 1.0
@@ -228,9 +228,9 @@ algorithm:
     - solved
     - x
     description: 'solved = (info == 0). When solved is true, x = rhs(:, 1), every element written. When info > 0
-      (an exactly zero diagonal element of U: l0_singular_n2, l0_singular_n3) solved is false and x is not defined;
-      no other method, regularization or least-squares solution replaces the refused solve. The operation never
-      ends the program.'
+      (an exactly zero diagonal element of U: l0_singular_n2 with info = n = 2, l0_singular_first_column with info
+      = 1) solved is false and x is not defined; no other method, regularization or least-squares solution replaces
+      the refused solve. The operation never ends the program.'
   ordering:
   - step_01_order_guard
   - step_02_copy
@@ -365,7 +365,7 @@ io_contract:
     expected_outcome: xfail
     target_cases:
     - l0_singular_n2
-    - l0_singular_n3
+    - l0_singular_first_column
     quantities:
     - solved
   predicates:
@@ -441,7 +441,7 @@ io_contract:
     quantity: solved
     target_cases:
     - l0_singular_n2
-    - l0_singular_n3
+    - l0_singular_first_column
     per_case: true
     expr: final.solved
     op: eq
