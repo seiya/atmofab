@@ -512,6 +512,94 @@ class SymbolCheckTests(_Fixture):
             self.assertEqual((violation or "").count("library_declared_unused"), 2)
 
 
+class BuildRoutingTests(_Fixture):
+    """`Conductor._build_inproc` hands the library values to make, records the directories,
+    and routes a symbol violation of the node's own objects to Generate."""
+
+    def _build(self, declared: tuple[str, ...]) -> tuple[dict, list[dict]]:
+        import tools.workflow_conductor as wc
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConductor
+        build_runtime = _build_runtime()
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            write_declarations(repo)
+            write_sites(repo, self.dirs)
+            spec = repo / "spec/component/spec_x"
+            spec.mkdir(parents=True)
+            (spec / "deps.yaml").write_text(
+                "dependencies:\n  components: []\n  profiles: []\n  libraries:\n"
+                + "".join(f"    - {{library_id: {i}}}\n" for i in declared))
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                                   orchestration_agent_run_id="x",
+                                   llm_config=sample_config_with("claude"), env={},
+                                   target_profile=FORTRAN_CPU)
+            refs = wc.NodeRefs(target_id=FORTRAN_CPU.target_id,
+                               node_key="component/spec_x@0.1.0",
+                               spec_path="spec/component/spec_x", ir_id="x_1",
+                               pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            calls: list[dict] = []
+
+            def fake_compile(args):
+                calls.append(args)
+                overrides = dict(a.split("=", 1) for a in args["extra_args"])
+                obj, bin_dir = Path(overrides["OBJDIR"]), Path(overrides["BINDIR"])
+                obj.mkdir(parents=True, exist_ok=True)
+                (obj / "spec_x_model.f90").write_text(_MODEL_BOTH)
+                _run(["gfortran", *overrides["LIBINC"].split(), "-c", "spec_x_model.f90",
+                      "-o", "spec_x_model.o"], obj)
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                (bin_dir / overrides["BIN"]).write_text("bin\n")
+                return {"ok": True, "return_code": 0, "command_id": f"cid{len(calls)}",
+                        "command": ["make", *args["extra_args"]], "stderr": ""}
+
+            real_run = subprocess.run
+
+            def run_but_the_post_build_validator(argv, *a, **k):
+                # The post_build validator subprocess is not this row's subject; every other
+                # program (the compiler, the symbol-table readers) runs for real.
+                if any("validate_pipeline_semantics" in str(w) for w in argv):
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+                return real_run(argv, *a, **k)
+
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile), \
+                    mock.patch.object(wc.Conductor, "_dependency_closure_nodes",
+                                      lambda self_, refs_: []), \
+                    mock.patch.object(wc.Conductor, "_stage_dependency_sources",
+                                      lambda self_, refs_, obj_dir, *, phase: []), \
+                    mock.patch.object(wc.Conductor, "_closure_libraries",
+                                      lambda self_, refs_: self.resolved()), \
+                    mock.patch.object(subprocess, "run", run_but_the_post_build_validator):
+                out = c._build_inproc(refs, "child-1")
+            self.assertEqual(out["returncode"], 0)
+            meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+        return meta, calls
+
+    def test_a_node_that_declares_what_it_calls_passes_and_records_the_directories(
+            self) -> None:
+        meta, calls = self._build(("vend", "foo"))
+        self.assertEqual(meta["verification_status"], "pass", meta.get("failure_excerpt"))
+        inc_value, link_value = xl.make_values("gfortran", self.resolved())
+        for call in calls:   # the build and the checked build alike, before the overrides
+            self.assertEqual(call["extra_args"][:2], [f"LIBINC={inc_value}", f"LIBS={link_value}"])
+        self.assertEqual(meta["library_dirs"], [str(self.dirs["lib"])])
+        self.assertEqual(meta["library_check"]["violations"], [])
+        self.assertEqual(meta["library_check"]["objects"], ["spec_x_model.o"])
+
+    def test_an_undeclared_import_fails_the_build_toward_generate(self) -> None:
+        # `foo` is on the link line (a dependency's declaration, `_closure_libraries` above)
+        # and the node itself declares only `vend`.
+        import tools.workflow_conductor as wc
+        meta, _calls = self._build(("vend",))
+        self.assertEqual(meta["verification_status"], "fail")
+        self.assertEqual(meta["failure_category"], "validate_post_build_violation")
+        self.assertIn("library_symbol_not_declared", meta["failure_excerpt"])
+        self.assertEqual(wc.BUILD_FAILURE_ROUTING["validate_post_build_violation"][0],
+                         "generate")
+
+
 class KeyMemberTests(_Fixture):
     """The build key's `libraries` member, its comparand form, and the validate key's copy."""
 
