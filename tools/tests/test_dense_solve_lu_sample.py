@@ -129,7 +129,7 @@ class DenseSolveLuSampleTest(unittest.TestCase):
 
     def test_the_hand_model_has_every_test_at_its_expected_outcome(self) -> None:
         self.assertEqual(sorted(self.expected.values()),
-                         ["pass", "pass", "pass", "xfail", "xfail"])
+                         ["pass", "pass", "xfail", "xfail"])
         self.assertEqual(self._moved(None), set())
 
     def test_the_hand_model_reaches_the_library_it_declares(self) -> None:

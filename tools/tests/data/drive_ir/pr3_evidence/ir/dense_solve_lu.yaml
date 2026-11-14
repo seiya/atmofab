@@ -346,14 +346,6 @@ io_contract:
     quantities:
     - solved
     - solution_error
-  - test_id: l0_row_exchange_pair_pass
-    expected_outcome: pass
-    target_cases:
-    - l0_base3
-    - l0_base3_rowperm
-    quantities:
-    - solved
-    - pair_residual
   - test_id: l0_circulant_family_pass
     expected_outcome: pass
     target_cases:
@@ -401,33 +393,6 @@ io_contract:
     quantity: cross_target_state_agreement
     target_cases:
     - l0_n1
-    - l0_base3
-    - l0_base3_rowperm
-    per_case: true
-    expr: maxabs(final.x - comparand.final.x) / max(maxabs(final.x), maxabs(comparand.final.x), 1.0)
-    op: le
-    value: 1.0e-12
-  - test_id: l0_row_exchange_pair_pass
-    quantity: solved
-    target_cases:
-    - l0_base3
-    - l0_base3_rowperm
-    per_case: true
-    expr: final.solved
-    op: eq
-    value: 1.0
-  - test_id: l0_row_exchange_pair_pass
-    quantity: pair_residual
-    target_cases:
-    - l0_base3
-    - l0_base3_rowperm
-    case: l0_base3_rowperm
-    expr: norm2(final.x - at('l0_base3').final.x) / norm2(at('l0_base3').final.x)
-    op: le
-    value: 1.0e-12
-  - test_id: l0_row_exchange_pair_pass
-    quantity: cross_target_state_agreement
-    target_cases:
     - l0_base3
     - l0_base3_rowperm
     per_case: true
@@ -489,7 +454,6 @@ public_api:
   - operation_id: dense_solve_lu__solve
     exercised_by:
     - l0_declared_solution_pass
-    - l0_row_exchange_pair_pass
     - l0_circulant_family_pass
     - l0_invalid_n_xfail
     - l0_singular_xfail

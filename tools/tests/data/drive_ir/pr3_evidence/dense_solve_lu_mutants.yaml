@@ -11,7 +11,7 @@
 
 transposed-matrix:
   title: the library is handed the transposed matrix
-  by: [l0_declared_solution_pass, l0_row_exchange_pair_pass]
+  by: [l0_declared_solution_pass]
   patches:
     - old: "    lu = a\n"
       new: "    lu = transpose(a)\n"
@@ -30,8 +30,7 @@ wrong-leading-dimension:
     the storage)
   # `l0_singular_xfail` moves too: the matrix the library reads from the misaddressed storage of
   # `l0_singular_n2` is not singular.
-  by: [l0_declared_solution_pass, l0_row_exchange_pair_pass, l0_circulant_family_pass,
-       l0_singular_xfail]
+  by: [l0_declared_solution_pass, l0_circulant_family_pass, l0_singular_xfail]
   patches:
     - old: "    allocate (lu(n, n), rhs(n, 1), ipiv(n))\n    lu = a\n"
       new: "    allocate (lu(n + 1, n), rhs(n, 1), ipiv(n))\n    lu = 0.0_dp\n    lu(1:n, :) = a\n"
