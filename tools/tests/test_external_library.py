@@ -1154,8 +1154,12 @@ class LibraryVerdictTests(_Fixture):
     def test_the_post_build_programs_are_required(self) -> None:
         from tools import host_prerequisites
         real_which = shutil.which
+        # Asked before the shared library is resolved, which runs the program (Codex, round
+        # 2): without it the resolution raised out of the verdict as a traceback.
         with mock.patch.object(host_prerequisites.shutil, "which",
-                               lambda name: None if name == "objdump" else real_which(name)):
+                               lambda name: None if name == "objdump" else real_which(name)), \
+                mock.patch("tools.backends.compiler.gfortran.library_binary._run",
+                           side_effect=FileNotFoundError("objdump")):
             verdict = self._verdict()
         self.assertEqual((verdict["status"], verdict["reason"], verdict["missing"]),
                          ("fail", "missing_required_host_tools", ["objdump"]))

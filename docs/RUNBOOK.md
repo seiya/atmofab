@@ -241,11 +241,11 @@ Compile is target-free. The questions are asked in this order, and the first tha
 
 | outcome | exit | what it means |
 |---|---|---|
+| `missing_required_host_tools` (`status: fail`) | 2 | this host lacks a program the post-build library checks and the resolution of a shared library run (the role row in the table above) |
 | `library_at_remote_site` (`status: fail`) | 2 | the target maps to a remote site; a closure that declares a library is built and run at `local` only, because the host hashes the files it links |
-| `library_unavailable` (`status: library_unavailable`, `reason` `library_language_mismatch` or `library_not_at_site`) | 5 | `library unavailable`: the library is for another language than the target's, or the site does not list it. Nothing is written under `workspace/pipelines/`. Install the library and list it under the site's `libraries:`, or run another target |
+| `library_unavailable` (`status: library_unavailable`, `reason` `library_language_mismatch` or `library_not_at_site`) | 5 | `library unavailable`: the library is for another language than the target's, or the site does not list it. Nothing of the node is written under `workspace/pipelines/` (under `--with-deps` the members that can run do). Install the library and list it under the site's `libraries:`, or run another target |
 | `library_capability_missing` (`status: fail`) | 2 | the target's compiler declares no `library_flags` or `library_binary` (`docs/BACKEND_BOUNDARY.md`) |
 | `site_library_unresolved` (`status: fail`) | 2 | the site lists the library and its files do not resolve: a link name with no file, a shared object whose load-name file is not beside it, a declared module with no module file under `include` |
-| `missing_required_host_tools` (`status: fail`) | 2 | this host lacks a program the post-build library checks run (the role row in the table above) |
 
 Exit code 5 is `tools/run_workflow.py`'s own (`LIBRARY_UNAVAILABLE_EXIT`); it is unrelated to the
 static validator's rc 5 of §3-1. Under `--with-deps` every member is asked before any member runs:

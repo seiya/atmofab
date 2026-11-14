@@ -4874,6 +4874,16 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
                 "spec_ref": spec_ref}
     if not declarations:
         return None
+    # The programs first: resolving a shared object runs one of them.
+    from tools.host_prerequisites import missing_host_executables
+    missing = [item.executable for item in missing_host_executables(
+        _host_probe_selection(target_profile), [d.library_id for d in declarations])]
+    if missing:
+        return {"status": "fail", "reason": "missing_required_host_tools",
+                "detail": (f"missing host tools: {','.join(missing)} — the closure declares "
+                           f"external libraries, and the post-build library checks run them "
+                           f"(see docs/RUNBOOK.md#0-1)"),
+                "missing": missing, "spec_ref": spec_ref, "docs_ref": "docs/RUNBOOK.md#0-1"}
     try:
         xl.resolve_closure(repo_root, target_profile, declarations)
     except xl.LibraryUnusable as exc:
@@ -4891,15 +4901,6 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     except (SitesConfigError, TargetProfileError) as exc:
         return {"status": "fail", "reason": "sites_config_invalid", "detail": str(exc),
                 "spec_ref": spec_ref}
-    from tools.host_prerequisites import missing_host_executables
-    missing = [item.executable for item in missing_host_executables(
-        _host_probe_selection(target_profile), [d.library_id for d in declarations])]
-    if missing:
-        return {"status": "fail", "reason": "missing_required_host_tools",
-                "detail": (f"missing host tools: {','.join(missing)} — the closure declares "
-                           f"external libraries, and the post-build library checks run them "
-                           f"(see docs/RUNBOOK.md#0-1)"),
-                "missing": missing, "spec_ref": spec_ref, "docs_ref": "docs/RUNBOOK.md#0-1"}
     return None
 
 
