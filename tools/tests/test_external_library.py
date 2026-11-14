@@ -338,6 +338,10 @@ class ResolveTests(_Fixture):
             lib, inc = Path(td) / "lib", Path(td) / "include"
             shutil.copytree(self.dirs["lib"], lib, symlinks=True)
             shutil.copytree(self.dirs["include"], inc)
+            # The link file a copy, so the load-name file is a file of its own (as a
+            # distribution's `.so` and `.so.N` chains are): changing it changes no link hash.
+            (lib / "libfoo.so").unlink()
+            shutil.copy2(lib / "libfoo.so.1", lib / "libfoo.so")
             write_sites(self.repo, self.dirs, libraries=(
                 f"      vend: {{include: {inc}, lib: {lib}}}\n      foo: {{lib: {lib}}}\n"))
             before = xl.identity(self.resolved())
@@ -406,6 +410,28 @@ class ResolveTests(_Fixture):
             roots = xl.bind_roots([r])
         for d in (a, b, c):
             self.assertIn(str(d), roots)
+
+    def test_a_remote_site_is_refused(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        targets = self.repo / "spec/targets"
+        targets.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo_root / "spec/targets/fortran_cpu.yaml", targets)
+        (self.repo / "sites.yaml").write_text(textwrap.dedent(f"""\
+            sites_version: 1
+            sites:
+              box:
+                host: box
+                workdir: /w
+                executes: [cpu]
+                scheduler: none
+                libraries:
+                  foo: {{lib: {self.dirs['lib']}}}
+            targets:
+              fortran_cpu: box
+            """))
+        with self.assertRaises(xl.LibraryUnusable) as cm:
+            self.resolved(("foo",))
+        self.assertEqual(cm.exception.reason, xl.REMOTE_SITE)
 
     def test_unavailable_and_refused_closures(self) -> None:
         decls = [xl.load_declaration(self.repo, "foo")]
@@ -569,6 +595,43 @@ class ControlFileAndSyntaxTests(_Fixture):
                              include_dirs=("/x",))
 
 
+class GateSyntaxTests(_Fixture):
+    """`Generate.gate`'s syntax stage finds a library module through the closure's include
+    directories (round 1: a mutant emptying them survived every row)."""
+
+    def _gate(self, libraries: list) -> dict:
+        import tools.workflow_conductor as wc
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_workflow_conductor import _TargetedConductor
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                                   orchestration_agent_run_id="x",
+                                   llm_config=sample_config_with("claude"), env={},
+                                   target_profile=FORTRAN_CPU)
+            refs = wc.NodeRefs(target_id=FORTRAN_CPU.target_id,
+                               node_key="component/spec_x@0.1.0",
+                               spec_path="spec/component/spec_x", ir_id="x_1", pipeline_id="x_1",
+                               source_id="src_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            src = repo / refs.source_dir() / "src"
+            src.mkdir(parents=True)
+            (src / "m_model.f90").write_text(_MODEL_BOTH)
+            with mock.patch.object(wc.Conductor, "_closure_libraries",
+                                   lambda self_, refs_: libraries), \
+                    mock.patch.object(wc.Conductor, "_stage_dependency_sources",
+                                      lambda self_, refs_, d, *, phase: []), \
+                    mock.patch.object(wc.Conductor, "_refuse_unstaged_closure",
+                                      lambda *a, **k: None):
+                return c._gate_syntax_check(refs, "child-1")
+
+    def test_the_gate_compiles_a_library_module_user_with_the_include_directories(self) -> None:
+        self.assertEqual(self._gate(self.resolved())["status"], "pass")
+        failed = self._gate([])
+        self.assertEqual(failed["status"], "fail")
+        self.assertIn("vend", failed["failure_excerpt"])
+
+
 class SymbolCheckTests(_Fixture):
     """The post-build checks over the objects a node's leaf authored."""
 
@@ -646,7 +709,9 @@ class BuildRoutingTests(_Fixture):
     """`Conductor._build_inproc` hands the library values to make, records the directories,
     and routes a symbol violation of the node's own objects to Generate."""
 
-    def _build(self, declared: tuple[str, ...]) -> tuple[dict, list[dict]]:
+    def _build(self, declared: tuple[str, ...], *, closure: tuple[str, ...] = (),
+               extra_objects: dict[str, str] | None = None,
+               runner_host_authored: bool = False) -> tuple[dict, list[dict]]:
         import tools.workflow_conductor as wc
         from tools.tests.llm_samples import sample_config_with
         from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConductor
@@ -680,6 +745,10 @@ class BuildRoutingTests(_Fixture):
                 (obj / "spec_x_model.f90").write_text(_MODEL_BOTH)
                 _run(["gfortran", *overrides["LIBINC"].split(), "-c", "spec_x_model.f90",
                       "-o", "spec_x_model.o"], obj)
+                for stem, text in (extra_objects or {}).items():
+                    (obj / f"{stem}.f90").write_text(text)
+                    _run(["gfortran", *overrides["LIBINC"].split(), "-c", f"{stem}.f90",
+                          "-o", f"{stem}.o"], obj)
                 bin_dir.mkdir(parents=True, exist_ok=True)
                 (bin_dir / overrides["BIN"]).write_text("bin\n")
                 return {"ok": True, "return_code": 0, "command_id": f"cid{len(calls)}",
@@ -696,9 +765,11 @@ class BuildRoutingTests(_Fixture):
 
             with mock.patch.object(build_runtime, "tool_compile_project", fake_compile), \
                     mock.patch.object(wc.Conductor, "_dependency_closure_nodes",
-                                      lambda self_, refs_: []), \
+                                      lambda self_, refs_: list(closure)), \
                     mock.patch.object(wc.Conductor, "_stage_dependency_sources",
                                       lambda self_, refs_, obj_dir, *, phase: []), \
+                    mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                                      lambda self_, refs_: runner_host_authored), \
                     mock.patch.object(wc.Conductor, "_closure_libraries",
                                       lambda self_, refs_: self.resolved()), \
                     mock.patch.object(subprocess, "run", run_but_the_post_build_validator):
@@ -717,6 +788,27 @@ class BuildRoutingTests(_Fixture):
         self.assertEqual(meta["library_dirs"], [str(self.dirs["lib"])])
         self.assertEqual(meta["library_check"]["violations"], [])
         self.assertEqual(meta["library_check"]["objects"], ["spec_x_model.o"])
+
+    def test_the_closure_s_and_the_host_runner_s_objects_are_not_the_node_s(self) -> None:
+        """A staged dependency's model object and the host-rendered runner's object reach the
+        libraries their own nodes (or the host) declare; only the node's own objects are
+        checked. Without the exclusion every consumer of a library-declaring member would
+        fail `library_symbol_not_declared`."""
+        foo_caller = ("subroutine {name}()\n  real(8), external :: foo_add\n"
+                      "  print *, foo_add(1d0)\nend subroutine {name}\n")
+        meta, _calls = self._build(
+            ("vend", "foo"), closure=("component/dep@0.1.0",), runner_host_authored=True,
+            extra_objects={"dep_model": foo_caller.format(name="d"),
+                           "spec_x_runner": foo_caller.format(name="r")})
+        self.assertEqual(meta["verification_status"], "pass", meta.get("failure_excerpt"))
+        self.assertEqual(meta["library_check"]["objects"], ["spec_x_model.o"])
+        # The same two objects as the node's own (no closure, a leaf-authored runner): both
+        # are checked.
+        meta, _calls = self._build(
+            ("vend", "foo"), extra_objects={"dep_model": foo_caller.format(name="d"),
+                                             "spec_x_runner": foo_caller.format(name="r")})
+        self.assertEqual(sorted(meta["library_check"]["objects"]),
+                         ["dep_model.o", "spec_x_model.o", "spec_x_runner.o"])
 
     def test_an_undeclared_import_fails_the_build_toward_generate(self) -> None:
         # `foo` is on the link line (a dependency's declaration, `_closure_libraries` above)
@@ -895,6 +987,39 @@ class KeyMemberTests(_Fixture):
                 self.assertEqual(inputs(step, ("foo",))["libraries"], want)
                 self.assertNotIn("libraries", inputs(step, ()))
 
+    def test_the_build_key_carries_the_member_only_when_the_closure_declares(self) -> None:
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import DerivationResolver
+
+        def inputs(declared: tuple[str, ...]) -> dict:
+            self._member(probe=False, declared=declared)   # writes the deps.yaml
+            resolver = DerivationResolver(self.repo, target=FORTRAN_CPU,
+                                          spec_refs={"component/n@0.1.0": "spec/component/n"})
+            with mock.patch.object(ort, "_certified_output_hash", return_value="h"), \
+                    mock.patch.object(ort, "_pipeline_closure_for_key", return_value=[]), \
+                    mock.patch.object(ort, "_target_toolchain_identity", return_value={}):
+                return ort.phase_derivation_inputs(
+                    self.repo, node_key="component/n@0.1.0", step="build",
+                    ir_ref="workspace/i", source_ref="workspace/s", resolver=resolver)
+
+        self.assertEqual(inputs(("vend", "foo"))["libraries"], xl.identity(self.resolved()))
+        self.assertNotIn("libraries", inputs(()))
+
+    def test_a_closure_member_s_declaration_reaches_the_key(self) -> None:
+        """A library a closure member declares (the harness's, on a target whose harness
+        writes through a library) is on every consumer's link line and in its key."""
+        import tools.orchestration_runtime as ort
+        dep = self.repo / "spec/component/dep"
+        dep.mkdir(parents=True, exist_ok=True)
+        (dep / "deps.yaml").write_text("dependencies:\n  components: []\n  profiles: []\n"
+                                       "  libraries:\n    - {library_id: foo}\n")
+        self._member(probe=False, declared=())
+        with mock.patch.object(ort, "resolve_spec_ref_for",
+                               lambda root, kind, sid: f"spec/{kind}/{sid}"):
+            got = xl.closure_declarations(self.repo, "spec/component/n",
+                                          ["component/dep@0.1.0"])
+        self.assertEqual([d.library_id for d in got], ["foo"])
+
     def test_a_site_that_cannot_serve_it_is_unresolvable(self) -> None:
         from tools.orchestration_runtime import DerivationInputsUnresolvable
         write_sites(self.repo, self.dirs, libraries="      vend:\n")
@@ -953,6 +1078,9 @@ class KeyMemberTests(_Fixture):
                             ort._derivation_key("validate", inputs(swapped)))
         with self.assertRaises(ort.DerivationInputsUnresolvable):
             inputs(None)
+        # A stamp naming other libraries than the closure declares is no stamp to copy.
+        with self.assertRaises(ort.DerivationInputsUnresolvable):
+            inputs([{**probed[0], "library_id": "zz"}, probed[1]])
 
 
 class LibraryVerdictTests(_Fixture):
