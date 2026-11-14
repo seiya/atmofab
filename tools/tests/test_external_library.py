@@ -251,6 +251,50 @@ class DeclarationTests(unittest.TestCase):
                 xl.node_library_ids(repo, "spec/component/x")
 
 
+class ProfileTests(unittest.TestCase):
+    """A `profile` selects components; its `libraries:` would be an allowed key no expansion
+    reads, so it is refused by name (round 3, disclosure F1: dropped silently before)."""
+
+    def test_a_profile_declaring_libraries_is_refused(self) -> None:
+        from tools.orchestration_runtime import (
+            _PROFILE_EXPANSION_REASONS, _load_spec_catalog, _parse_dep_entries,
+            _read_deps_yaml, expand_profile_dependencies)
+        self.assertIn("profile_declares_libraries", _PROFILE_EXPANSION_REASONS)
+        for declared in (True, False):
+            with self.subTest(declared=declared), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                lines = ["catalog_version: 0.2.0", "specs:"]
+                for kind, sid in (("problem", "a"), ("profile", "pr"), ("component", "c")):
+                    lines += [f"  - spec_kind: {kind}", f"    spec_id: {sid}",
+                              "    spec_version: \"0.1.0\"",
+                              f"    deps_path: spec/{kind}/{sid}/deps.yaml"]
+                (repo / "spec/registry").mkdir(parents=True)
+                (repo / "spec/registry/spec_catalog.yaml").write_text("\n".join(lines) + "\n")
+                deps = {
+                    "spec/problem/a": "  components: []\n  profiles:\n    - profile_id: pr\n"
+                                      "      version_constraint: \">=0.1.0\"\n",
+                    "spec/profile/pr": "  components:\n    - component_id: c\n"
+                                       "      version_constraint: \">=0.1.0\"\n  profiles: []\n"
+                                       + ("  libraries:\n    - library_id: vend\n"
+                                          if declared else ""),
+                    "spec/component/c": "  components: []\n  profiles: []\n",
+                }
+                for ref, body in deps.items():
+                    (repo / ref).mkdir(parents=True)
+                    (repo / ref / "deps.yaml").write_text("dependencies:\n" + body)
+                _load_spec_catalog.cache_clear()
+                entries, _ok = _parse_dep_entries(_read_deps_yaml(repo, "spec/problem/a"))
+                try:
+                    _exp, _rec, err = expand_profile_dependencies(
+                        repo, "spec/problem/a", entries, _load_spec_catalog(str(repo.resolve())))
+                finally:
+                    _load_spec_catalog.cache_clear()
+                if declared:
+                    self.assertEqual(err["reason"], "profile_declares_libraries")
+                else:
+                    self.assertIsNone(err)
+
+
 class SitesTests(unittest.TestCase):
 
     def _load(self, text: str):
@@ -454,6 +498,15 @@ class ResolveTests(_Fixture):
             roots = xl.bind_roots([r])
             self.assertIn(str(Path(td) / "deep/a/z"), roots)
             self.assertTrue(all(os.path.isdir(d) for d in roots), roots)
+
+    def test_a_missing_include_directory_is_not_bound(self) -> None:
+        """A library that declares no module resolves with any `include:`; a directory that
+        does not exist is not bound (bwrap refuses the whole command for one; round 3)."""
+        write_sites(self.repo, self.dirs, libraries=(
+            f"      foo: {{include: /nonexistent_inc_644, lib: {self.dirs['lib']}}}\n"))
+        (foo,) = self.resolved(("foo",))
+        self.assertEqual(xl.include_dirs([foo]), ("/nonexistent_inc_644",))
+        self.assertNotIn("/nonexistent_inc_644", xl.bind_roots([foo]))
 
     def test_unavailable_and_refused_closures(self) -> None:
         decls = [xl.load_declaration(self.repo, "foo")]

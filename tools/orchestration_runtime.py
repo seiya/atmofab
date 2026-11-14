@@ -817,6 +817,7 @@ _PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
     "profile_nesting_unsupported",
     "profile_declares_infrastructure",
     "profile_declares_problem",
+    "profile_declares_libraries",
     "profile_component_declared_twice",
     "profile_component_conflict",
 })
@@ -956,6 +957,15 @@ def expand_profile_dependencies(
                 f"{spec_ref}: profile/{sid} declares problem(s) {declared_problems}; a profile "
                 f"selects components only, and a `problem` dependency is declared by the "
                 f"composing `problem` itself",
+            )
+        # The same for `libraries` (issue #644): an allowed key no expansion reads, so a
+        # profile's declaration would be dropped silently. A library is declared by the node
+        # whose sources reach it.
+        if "libraries" in (profile_deps.get("dependencies") or {}):
+            return _fail(
+                "profile_declares_libraries",
+                f"{spec_ref}: profile/{sid} declares `libraries`; a profile selects components "
+                f"only, and an external library is declared by the spec whose sources reach it",
             )
         record_components: list[dict[str, Any]] = []
         for p_kind, cid, c_constraint in p_entries:

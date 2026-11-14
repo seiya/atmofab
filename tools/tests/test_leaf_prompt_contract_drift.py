@@ -1180,7 +1180,7 @@ PINNED: dict[str, str] = {
     # storage kept only for reuse, the Fortran fragment's `use` and `!$` clause).
     "leaf-98": "1aaadcc256f0eef57948967780e84af0cb28debe21d6641ba099bfc993fe8de1",
     # leaf-99: the external-library wording of the generate and compile templates and fragments (issue #644 P1).
-    "leaf-99": "25b1498d5cc7545367d609664de8aba0080676467cd5fcae2a8c3c935e86216a",
+    "leaf-99": "eeca1f9e837ec78e2adca277bfcf735c99f9b6cdd8818dc5dd078b4cc5845d95",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
