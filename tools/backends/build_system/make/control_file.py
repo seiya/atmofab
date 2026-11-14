@@ -58,13 +58,17 @@ BUILDS_IN_SOURCE = True
 QUALITY_CHECK_PRESETS: dict[str, str] = {"make_test": "test", "make_check": "check"}
 
 
+#: The suffix of an object the control file's rules compile a source to.
+OBJECT_SUFFIX = ".o"
+
+
 def object_name(logical_path: str) -> str:
     """The object basename a source compiles to. A flat `<name>.<ext>` yields `<name>.o`
     (parity with the IR-shaped Makefile); a nested path is flattened with `__` so two files with
     the same basename in different directories cannot collide. Moved unchanged from
     `codegen_bundle._object_name` (issue #424 PR-2)."""
     stem, _ = posixpath.splitext(logical_path)
-    return stem.replace("/", "__") + ".o"
+    return stem.replace("/", "__") + OBJECT_SUFFIX
 
 
 def _clean_recipe(rules: dict[str, Any]) -> str:

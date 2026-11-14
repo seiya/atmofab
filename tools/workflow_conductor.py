@@ -11610,7 +11610,8 @@ class Conductor:
             if self._conductor_authors_runner(refs):
                 foreign.add(control_file.object_name(self._runner_basename(refs)))
             own_objects = sorted(p for p in obj_dir.iterdir()
-                                 if p.is_file() and p.suffix == ".o" and p.name not in foreign)
+                                 if p.is_file() and p.suffix == control_file.OBJECT_SUFFIX
+                                 and p.name not in foreign)
             library_check, library_violation = xl.symbol_check(
                 self.target, own_objects, libraries,
                 xl.node_library_ids(self.repo_root, refs.spec_path))
