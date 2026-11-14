@@ -35,9 +35,14 @@ sites:
   # and that site's directives request it; two sites may name the same host.
   # cluster_gpu: {host: login-node, workdir: /work/spec2science-jobs, executes: [gpu],
   #               scheduler: slurm, scheduler_directives: [<select a machine with the device>]}
-  local:                            # optional; `executes` is the only key it takes (no `setup`:
+  local:                            # optional; it takes `executes` and `libraries` (no `setup`:
                                     # this host's commands run in the operator's own environment)
     executes: [cpu]
+    libraries:                      # optional: where each external library a node declares is installed
+      example_lib:                  # a library id: its declaration is spec/libraries/example_lib.yaml
+        include: /opt/example_lib/include  # optional: the directory its module files are in
+        lib: /opt/example_lib/lib          # optional: the directory its library files are in; without it
+                                           # the compiler's own search locates them
 targets:                            # target id -> site id; a target not listed runs at `local`
   fortran_cpu: local                # write `cpu_box` here to run this target's binary there
 # A binary is built at the site its target maps to and runs only there (issue #333). A site is
@@ -47,3 +52,6 @@ targets:                            # target id -> site id; a target not listed 
 # reproduces the binary's bytes moves no validate key (for the target node only; a
 # --with-deps member is re-run by its own invocation). The same holds for a change to a site's
 # `setup` lines (another compiler module, say): pass `--rederive build,validate` to use it.
+# A library's files are the exception: a closure that declares one is built and run at `local`
+# only, and the content hashes of its declared files there are in the build and validate keys,
+# so replacing them re-runs the Build and Validate on the next run.

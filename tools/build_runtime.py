@@ -1055,6 +1055,10 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     stage's `compiler` is the one the wrapper runs (`WRAPPED_COMPILER`), the command's `argv[0]`
     is the wrapper, so the model files of the backend's runtime are found. Replacing the program
     that runs is decided HERE, from the registry, never from a caller-supplied program name.
+
+    `include_dirs` (optional, an array of strings) are the module directories of the external
+    libraries the closure declares (issue #644), at the site's directories; the adapter adds
+    them to the search path. Its content is the operator's site data and is not checked.
     """
     project_dir = str(args.get("project_dir", "."))
     timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
@@ -1093,6 +1097,10 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     adapter = syntax_adapter(compiler)
     wrapper = syntax_compiler_wrapper(parallel_backend, compiler)
     language = syntax_language(adapter)
+
+    include_dirs = args.get("include_dirs", [])
+    if not isinstance(include_dirs, list) or not all(isinstance(d, str) for d in include_dirs):
+        raise ValueError("include_dirs must be an array of strings")
 
     sources = args.get("sources")
     if sources is not None and (
@@ -1146,7 +1154,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     command = adapter.argv(
         standard=std, scratch_dir=_SYNTAX_SCRATCH_DIR_NAME, parallel_backend=parallel_backend,
         promotions=tuple(language.PROMOTED_WARNINGS), architecture=architecture,
-        sources=ordered_sources)
+        sources=ordered_sources, include_dirs=tuple(include_dirs))
     if wrapper is not None:
         command = list(wrapper.wrap(command))
     result = _run_command(

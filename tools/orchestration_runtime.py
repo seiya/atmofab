@@ -654,8 +654,13 @@ def _resolve_dep_version(
 # publishes `__init` (`spec_input_gates.problem_dep_on_non_problem_violation`,
 # `problem_member_violation`).
 _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
+# The deps.yaml keys that name no closure node (issue #644, Part 3 P1): `libraries` lists the
+# external libraries the node's sources reach (`spec/libraries/<id>.yaml`). `_parse_dep_entries`
+# admits the key and skips it, so no closure code sees a library; `_parse_library_entries`
+# reads it.
+_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset({"libraries"})
 _DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"components", "problems", "profiles", "infrastructure"})
+    {"components", "problems", "profiles", "infrastructure"}) | _DEPS_NON_NODE_KEYS
 # (deps key, per-item id field). `kind = key.rstrip("s")` yields
 # component/problem/profile/infrastructure.
 # A `profile` entry is expanded into the components it selects by
@@ -669,12 +674,15 @@ _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
     ("infrastructure", "infrastructure_id"),
 )
 # The parse loop of `_parse_dep_entries` iterates `_DEPS_KEY_KIND_FIELDS` alone, so a key in
-# `_DEPS_YAML_ALLOWED_KEYS` that the pair table does not name would parse as well-formed with
-# its entries DROPPED. The two tables therefore name the same keys, checked at import.
-if {key for key, _field in _DEPS_KEY_KIND_FIELDS} != _DEPS_YAML_ALLOWED_KEYS:
+# `_DEPS_YAML_ALLOWED_KEYS` that neither the pair table nor `_DEPS_NON_NODE_KEYS` names would
+# parse as well-formed with its entries DROPPED. The allowed set is therefore exactly the two,
+# disjoint, checked at import.
+_PAIRED_DEPS_KEYS = frozenset(key for key, _field in _DEPS_KEY_KIND_FIELDS)
+if (_PAIRED_DEPS_KEYS | _DEPS_NON_NODE_KEYS != _DEPS_YAML_ALLOWED_KEYS
+        or _PAIRED_DEPS_KEYS & _DEPS_NON_NODE_KEYS):
     raise AssertionError(
-        "_DEPS_KEY_KIND_FIELDS and _DEPS_YAML_ALLOWED_KEYS must name the same deps.yaml keys: "
-        "a key allowed but not paired is parsed with its entries dropped")
+        "_DEPS_YAML_ALLOWED_KEYS must be the disjoint union of _DEPS_KEY_KIND_FIELDS' keys and "
+        "_DEPS_NON_NODE_KEYS: a key allowed but parsed by neither has its entries dropped")
 
 # Codex round 15 F2: identifiers from deps.yaml / spec_catalog.yaml are
 # interpolated into workspace/<kind>/<safe>/ paths. ANY of `spec_kind`,
@@ -773,6 +781,28 @@ def _parse_dep_entries(
     return entries, well_formed
 
 
+def _parse_library_entries(deps_doc: dict[str, Any]) -> tuple[list[str], bool]:
+    """The external libraries a deps.yaml declares under `dependencies.libraries` (issue #644,
+    Part 3 P1), as `(library_ids, well_formed)` in declared order. Absent key: `([], True)`.
+    Each entry is `{library_id: <token>}`; anything else, or an id declared twice, is malformed.
+    Whether the id names a declaration under `spec/libraries/` is the spec-input gate's
+    question (`external_library.declaration_violation`)."""
+    deps = deps_doc.get("dependencies") if isinstance(deps_doc, dict) else None
+    if not isinstance(deps, dict):
+        return [], False
+    items = deps.get("libraries", [])
+    if not isinstance(items, list):
+        return [], False
+    ids: list[str] = []
+    for item in items:
+        sid = item.get("library_id") if isinstance(item, dict) else None
+        if (not isinstance(item, dict) or set(item) != {"library_id"}
+                or not _is_safe_path_token(sid) or sid in ids):
+            return [], False
+        ids.append(sid)
+    return ids, True
+
+
 # The named `{reason}` values `expand_profile_dependencies` can return. Every one of them means
 # the registry WAS read and the declared closure does not resolve — a spec-author defect no leaf
 # can repair. `spec_catalog_corrupt`, which the expansion can also surface, is the registry-read
@@ -787,6 +817,7 @@ _PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
     "profile_nesting_unsupported",
     "profile_declares_infrastructure",
     "profile_declares_problem",
+    "profile_declares_libraries",
     "profile_component_declared_twice",
     "profile_component_conflict",
 })
@@ -926,6 +957,15 @@ def expand_profile_dependencies(
                 f"{spec_ref}: profile/{sid} declares problem(s) {declared_problems}; a profile "
                 f"selects components only, and a `problem` dependency is declared by the "
                 f"composing `problem` itself",
+            )
+        # The same for `libraries` (issue #644): an allowed key no expansion reads, so a
+        # profile's declaration would be dropped silently. A library is declared by the node
+        # whose sources reach it.
+        if "libraries" in (profile_deps.get("dependencies") or {}):
+            return _fail(
+                "profile_declares_libraries",
+                f"{spec_ref}: profile/{sid} declares `libraries`; a profile selects components "
+                f"only, and an external library is declared by the spec whose sources reach it",
             )
         record_components: list[dict[str, Any]] = []
         for p_kind, cid, c_constraint in p_entries:
@@ -1586,6 +1626,16 @@ class DerivationResolver:
                     against = {**inputs, "toolchain": {
                         **inputs["toolchain"],
                         **{leaf: stamped[leaf] for leaf in leaves if leaf in stamped}}}
+                    if "libraries" in inputs:
+                        # The libraries' files, off the same stamp (issue #644). A diagnosis
+                        # only (the selection is `_comparand_substituted_inputs`, pinned); no
+                        # row drives this branch, so it is not pinned.
+                        stamped_libraries = _stamped_library_files(
+                            recorded, inputs["libraries"])
+                        if stamped_libraries is None:
+                            missing.append("libraries")
+                        else:
+                            against["libraries"] = stamped_libraries
                 diff = missing + differing_inputs(recorded, against)
             rank = (stale_tuple, len(diff) if diff is not None else sys.maxsize)
             if closest is None or rank < closest[0] or (rank == closest[0]
@@ -2524,8 +2574,84 @@ def _comparand_substituted_inputs(doc: Mapping[str, Any], inputs: Mapping[str, A
     leaves = _host_probed_leaves(target)
     if not isinstance(stamped, Mapping) or any(leaf not in stamped for leaf in leaves):
         return None
-    return {**inputs, "toolchain": {**inputs["toolchain"],
-                                    **{leaf: stamped[leaf] for leaf in leaves}}}
+    out = {**inputs, "toolchain": {**inputs["toolchain"],
+                                   **{leaf: stamped[leaf] for leaf in leaves}}}
+    if "libraries" in inputs:
+        stamped_libraries = _stamped_library_files(recorded, inputs["libraries"])
+        if stamped_libraries is None:
+            return None
+        out["libraries"] = stamped_libraries
+    return out
+
+
+def _stamped_library_files(recorded: Any, computed: Sequence[Mapping[str, Any]]
+                           ) -> list[Any] | None:
+    """The libraries a stamp's `derivation_inputs.libraries` records — each with the site's
+    directories and files a key computed without probing lacks (issue #644) — when the stamp
+    names the same libraries with the same declarations, in the same order; None otherwise,
+    and when it records none."""
+    stamped = recorded.get("libraries") if isinstance(recorded, Mapping) else None
+    if not isinstance(stamped, list) or len(stamped) != len(computed):
+        return None
+    for entry, mine in zip(stamped, computed):
+        if not (isinstance(entry, Mapping)
+                and entry.get("library_id") == mine.get("library_id")
+                and entry.get("declaration_sha256") == mine.get("declaration_sha256")):
+            return None
+    return [dict(entry) for entry in stamped]
+
+
+def _own_library_declarations(repo_root: Path, node_key: str,
+                               spec: str) -> list[dict[str, Any]] | None:
+    """The compile and generate keys' `libraries` member (issue #644): the ids and declaration
+    hashes of the external libraries the node's own deps.yaml declares, whose modules and
+    procedures its leaves are told they may use; None (the member absent, so no key moves)
+    when it declares none."""
+    from tools import external_library as xl
+    try:
+        declarations = [xl.load_declaration(repo_root, i)
+                        for i in xl.node_library_ids(repo_root, spec)]
+    except xl.LibraryDeclarationError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: libraries of {node_key}: {exc}") from exc
+    return xl.declared_identity(declarations) or None
+
+
+def _closure_libraries_member(repo_root: Path, node_key: str, closure_nodes: Sequence[str],
+                              resolver: DerivationResolver, *, probe: bool
+                              ) -> list[dict[str, Any]] | None:
+    """The build key's `libraries` member (issue #644): None when the node and its pipeline
+    closure declare no external library (the member is then absent, so no such key moves);
+    else, per library in closure order, its id, its declaration's hash and the content hash of
+    every declared file at the site the target runs at (`external_library.identity`). A
+    comparand resolver probes nothing and records ids and declaration hashes alone
+    (`external_library.declared_identity`); `_comparand_substituted_inputs` fills the files off
+    each candidate's stamp; `probe=False` asks for that form too. The site is read here, from the operator's `sites.yaml`
+    (`external_library.site_for_target`), the one resolution the conductor's Build uses too;
+    an unreadable one, a remote site and a library the site cannot serve are unresolvable:
+    the driver decides each before any phase (`library unavailable`)."""
+    from tools import external_library as xl
+    from tools.execution_sites import SitesConfigError
+    from tools.target_profile import TargetProfileError
+    spec = resolver.spec_ref(node_key)
+    if spec is None:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: {node_key} resolves to no spec directory, so "
+            f"its libraries cannot be read")
+    try:
+        declarations = xl.closure_declarations(repo_root, spec, closure_nodes)
+    except xl.LibraryDeclarationError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: libraries of {node_key}: {exc}") from exc
+    if not declarations:
+        return None
+    if not probe or resolver.comparand:
+        return xl.declared_identity(declarations)
+    try:
+        return xl.identity(xl.resolve_closure(repo_root, resolver.target, declarations))
+    except (xl.LibraryUnusable, SitesConfigError, TargetProfileError, OSError) as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: libraries of {node_key}: {exc}") from exc
 
 
 def _target_toolchain_identity(target: TargetProfile, *, probe: bool = True) -> dict[str, Any]:
@@ -3066,7 +3192,7 @@ def phase_derivation_inputs(
                 "controlled_spec": _spec_file_hash(repo_root, profile_ref, "controlled_spec.md"),
             })
         profiles.sort(key=lambda p: p["node_key"])
-        return {
+        compile_inputs: dict[str, Any] = {
             "spec": {
                 "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
                 "tests": _spec_file_hash(repo_root, spec, "tests.md"),
@@ -3081,6 +3207,10 @@ def phase_derivation_inputs(
                 {"node_key": nk, "surface": _published_surface(repo_root, nk, resolver)}
                 for nk in _component_direct_deps(graph, node_key)])),
         }
+        own_libraries = _own_library_declarations(repo_root, node_key, spec)
+        if own_libraries is not None:
+            compile_inputs["libraries"] = own_libraries
+        return compile_inputs
 
     ir = need("ir_ref", ir_ref)
     target = resolver.target
@@ -3096,7 +3226,7 @@ def phase_derivation_inputs(
         harness_nk = _harness_for_key(repo_root, node_key, target)
         from tools.codegen_bundle import harness_capability_manifest_document_for
         manifest = harness_capability_manifest_document_for(harness_nk)
-        return {
+        generate_inputs: dict[str, Any] = {
             "ir": ir_hash,
             "spec": {
                 "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
@@ -3113,10 +3243,14 @@ def phase_derivation_inputs(
             },
             "closure": [_generate_closure_entry(repo_root, nk, resolver) for nk in closure_nodes],
         }
+        own_libraries = _own_library_declarations(repo_root, node_key, spec)
+        if own_libraries is not None:
+            generate_inputs["libraries"] = own_libraries
+        return generate_inputs
 
     if step_token == "build":
         source = need("source_ref", source_ref)
-        return {
+        build_inputs: dict[str, Any] = {
             "source": _certified_output_hash(
                 repo_root, repo_root / source / "source_meta.json",
                 what=f"{node_key} generate"),
@@ -3128,6 +3262,13 @@ def phase_derivation_inputs(
             # never passes one, so a stamp always carries the probed identity.
             "toolchain": _target_toolchain_identity(target, probe=not resolver.comparand),
         }
+        # The external libraries the build links (issue #644): present only when the closure
+        # declares one, so no other key moves.
+        libraries = _closure_libraries_member(repo_root, node_key, closure_nodes, resolver,
+                                              probe=True)
+        if libraries is not None:
+            build_inputs["libraries"] = libraries
+        return build_inputs
 
     spec = need("spec_ref", spec_ref)
     binary = need("binary_ref", binary_ref)
@@ -3149,6 +3290,23 @@ def phase_derivation_inputs(
                 "build_execute").QUALITY_CHECK_PRESET,
         },
     }
+    # The external libraries the binary loads (issue #644): the Build stamp's own record,
+    # copied rather than probed. A library swapped under an unchanged binary leaves the
+    # binary's bytes — the `binary` member — identical, so without this a Validate never run on
+    # the new library would be reused. Present only when the closure declares one.
+    declares = _closure_libraries_member(repo_root, node_key, closure_nodes, resolver,
+                                         probe=False)
+    if declares is not None:
+        build_meta = _read_json_or_none(repo_root / binary / "binary_meta.json")
+        stamped = (build_meta or {}).get("derivation_inputs") if isinstance(
+            build_meta, dict) else None
+        recorded = stamped.get("libraries") if isinstance(stamped, dict) else None
+        if not isinstance(recorded, list) or _stamped_library_files(stamped, declares) is None:
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: validate derivation of {node_key}: the "
+                f"closure declares libraries and the Build stamp at {binary} records none "
+                f"that match")
+        inputs["libraries"] = recorded
     return inputs
 
 

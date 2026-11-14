@@ -491,7 +491,7 @@ pure data under exactly three keys:
 - `compile_units[]`, each `{source, object, prerequisite_objects}`. `source` is prefixed
   by origin: `staged:` (a dependency source the host stages), `bundle:` (a bundle file),
   `glue:` (a host-rendered file).
-- `link.objects`, the ordered link line.
+- `link.objects`, the ordered objects of the link line. The link words of an `external library` the closure declares are not in the graph: `Build` passes them on the build command line (`docs/workflow/phases/phase_03_build.md`).
 - `toolchain`, the caller's toolchain (the run's target profile since issue #284; the IR's
   `impl_defaults.toolchain` before it) **projected onto a fixed declarative
   allowlist and value-validated** (`TOOLCHAIN_ECHO_KEYS`: `language`, `standard`,

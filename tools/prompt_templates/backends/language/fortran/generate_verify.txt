@@ -17,3 +17,5 @@ unused dummies, `intent(out)` dataflow
 an `associate (unused_x => x)` binding of an inert dummy
 @@ dependency_call_consistency
 each `call <dep>__<op>(...)`, or `call <local>(...)` by the local name of a `use <dep>_model, only: <local> => <dep>__<op>` rename, passes arguments in the published interface's order AND rank/shape (a lower-rank dummy is fed a matching slice inside a component loop, not the whole higher-rank state array)
+@@ external_library_use
+A listed library is reached by `use <module>` or by a `call` through an explicit `interface` block. Build refuses a source that reaches an unlisted library, so that is not yours to judge; whether the source USES a listed library for the computation the spec asks of it, rather than declaring it and computing the result some other way, is.

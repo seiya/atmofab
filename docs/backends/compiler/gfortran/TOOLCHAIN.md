@@ -56,7 +56,44 @@ What the flag does not bound, so the row cannot see:
   undefined behaviour, not by a gate; this language has no counterpart of the `extern "C"`
   refusal the `cuda_cpp` source gate makes).
 
-## 3. Installation
+## 3. External libraries
+
+`gfortran` declares `library_flags` and `library_binary` ([issue #644](https://github.com/seiya/spec2science/issues/644)
+Part 3 P1; `tools/backends/compiler/gfortran/library_flags.py`, `library_binary.py`). This is
+their binding; the neutral rule is `docs/ORCHESTRATION.md` §Execution sites, and the reason both
+sit on the `compiler` axis is `docs/BACKEND_BOUNDARY.md`.
+
+- **Include flags.** One `-I<dir>` per include directory, in closure order. A declared module
+  `<module>` resolves to `<include>/<module, lower case>.mod`; when the site entry names no
+  `include`, a declared module resolves to nothing (`site_library_unresolved`).
+- **Link words.** Each link name resolves to `lib<name>.so` in the site's `lib` directory, else
+  `lib<name>.a` there (the shared object first, as the linker's own `-l` search takes it). With no
+  `lib` directory, `gfortran -print-file-name=<file>` is asked for the same two names; an answer
+  that is not an absolute path to a file is no answer. The link words are the resolved files BY
+  PATH, in link order — never `-L<dir> -l<name>`: under the MPI compiler wrapper a `-L` of a
+  system directory pulled a second MPI into the binary, and by path the file linked is the file
+  the build key hashed — followed by `-Wl,-rpath-link,<dir>` for each library directory, so a
+  declared library's own shared dependencies in the same directory are found at link time
+  without the inherited `LD_LIBRARY_PATH`. Nothing is recorded in the binary: no `RPATH` or
+  `RUNPATH` is linked.
+- **The load name.** A shared object's `SONAME` is read from `objdump -p`; the file of that name
+  beside the link file is the file the loader takes, and the build key hashes it. An archive
+  has none.
+- **The run.** The loader variable is `LD_LIBRARY_PATH`. Its value for a run is the library
+  directories, `:`-joined, followed by `:` and the inherited value when that is non-empty; no
+  separator is written before an empty inherited value, because the loader reads an empty
+  element as the current directory. The value is prefixed, never replaced: replacing it drops the
+  operator's MPI and compiler runtime directories. An `RPATH` is not used because the MPI
+  compiler wrapper links with `--enable-new-dtags`, which turns it into a `RUNPATH` searched after
+  `LD_LIBRARY_PATH` (`docs/design/scale_migration.md`).
+- **The symbol reads** (the post-build checks, `docs/workflow/phases/phase_03_build.md`): an
+  object's imports are `nm -P -u`, its definitions `nm -P -g --defined-only`; a library's exports
+  are `nm -P -g --defined-only` over an archive (an archive is recognised by its `!<arch>` magic)
+  and `nm -P -D --defined-only` over a shared object. `library_binary.EXECUTABLES` is
+  `("nm", "objdump")`; the host refuses a run whose closure declares a
+  library on a host without them (`docs/RUNBOOK.md` §0-1).
+
+## 4. Installation
 
 Install it with the platform's own package manager, e.g. on Debian/Ubuntu:
 

@@ -42,14 +42,19 @@ STANDARD_SPELLING_EXAMPLE = "`c++17`, not `17`"
 
 
 def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
-         promotions: tuple[str, ...], architecture: str | None, sources: list[str]) -> list[str]:
+         promotions: tuple[str, ...], architecture: str | None, sources: list[str],
+         include_dirs: tuple[str, ...] = ()) -> list[str]:
     """The syntax-only command line.
 
     `architecture` is the target profile's `hardware.architecture`, passed as `-arch=`; `None`
     leaves the driver's default. `parallel_backend` is ACCEPTED AND NOT READ: no parallel backend a
     CUDA target declares adds a switch to this front end, and the argument exists for the
-    adapters it applies to. The sources stay last."""
+    adapters it applies to. `include_dirs` (an external library's module directories, issue
+    #644) must be empty: this compiler declares no `library_flags`, so no closure it builds
+    declares a library. The sources stay last."""
     del parallel_backend  # accepted, not read (see the docstring)
+    if include_dirs:
+        raise ValueError("include_dirs: this compiler reaches no external library")
     command = [EXECUTABLE, f"-std={standard}"]
     if architecture:
         command.append(f"-arch={architecture}")

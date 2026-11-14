@@ -200,9 +200,12 @@ class BuildTests(unittest.TestCase):
                 str(obj_checked), str(bin_checked), "spec_x_runner",
                 checked_build.control_file_rules(target),
                 checked_build.checked_flags_for(target)))
-            self.assertEqual(calls[1]["extra_args"], expected)
-            self.assertEqual(calls[0]["extra_args"], list(execute.build_overrides(
-                str(obj), str(repo / refs.binary_dir() / "bin"), "spec_x_runner")))
+            # The library variables (issue #644) lead; the tail is the checked overrides.
+            self.assertEqual(calls[1]["extra_args"], [*execute.library_overrides("", ""),
+                                                      *expected])
+            self.assertEqual(calls[0]["extra_args"], [
+                *execute.library_overrides("", ""), *execute.build_overrides(
+                    str(obj), str(repo / refs.binary_dir() / "bin"), "spec_x_runner")])
             # The closure is staged into each object directory, the certified one first.
             self.assertEqual(staged, [obj, obj_checked])
             self.assertTrue(any(obj_checked.iterdir()), "nothing staged into build_checked")
@@ -212,7 +215,8 @@ class BuildTests(unittest.TestCase):
                 "binary_ref": "binary/bin_1/bin_checked/spec_x_runner",
                 "obj_dir": str(obj_checked), "bin_dir": str(bin_checked),
                 "flags": list(checked_build.checked_flags_for(target)),
-                "command_id": "cid2", "argv": ["make", "-j1", *expected]})
+                "command_id": "cid2",
+                "argv": ["make", "-j1", *execute.library_overrides("", ""), *expected]})
             self.assertEqual(meta["binary_artifact_ref"], "binary/bin_1/bin/spec_x_runner")
             self.assertEqual(meta["command_id"], "cid1")
 
@@ -737,8 +741,9 @@ class RealMakeTests(unittest.TestCase):
                 "command_log_path": str(Path(td) / "log.jsonl")})
             self.assertTrue(result["ok"], result)
             flags = (obj / "flags.txt").read_text().strip()
+            # `$(LIBINC)` (issue #644) is not on this command line, so make expands it empty.
             self.assertEqual(flags, f"{rules['flags']} -fcheck=bounds".replace(
-                "$(OBJDIR)", str(obj)))
+                "$(OBJDIR)", str(obj)).replace("$(LIBINC)", ""))
             self.assertEqual(flags.count(f"-J{obj}"), 1)
             self.assertTrue((bin_ / "x").is_file())
 

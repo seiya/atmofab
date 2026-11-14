@@ -5,3 +5,5 @@
 
 @@ host_rendered_scope
 Nothing here is host-rendered, so nothing is out of scope for being invisible to you:
+@@ external_library_use
+A listed library is reached by `use <module>` or by a `call` through an explicit `interface` block. Build refuses a source that reaches an unlisted library, so that is not yours to judge; whether the source USES a listed library for the computation the spec asks of it, rather than declaring it and computing the result some other way, is.

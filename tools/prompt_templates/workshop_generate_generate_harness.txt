@@ -39,7 +39,7 @@ In your tree: `harness_capabilities.json`.
 **Target profile (the host's implementation target for this run — hardware, toolchain, parallel backend, execution shape and harness; rule (10) holds you to it, and your `target_lowering_plan` lowers onto it):**
 In your tree: `target_profile.json`.
 
-**Dependency facts (host-resolved):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none.
+**Dependency facts (host-resolved):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none. When this node declares external libraries, its `## External libraries` section lists them and what of each a source of this node may reach. {{language:external_library_use}}
 
 **Static lint rule set (host-resolved from the linter this node's language uses — the EXACT set the deterministic `Generate.gate` lint check selects, by code and rule name. Rule (11) holds you to all of it. It is the complete list: a rule absent from it is not checked, and no rule in it is waived by anything else in this prompt):**
 In your tree: `lint_rules.md`.

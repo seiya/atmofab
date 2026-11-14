@@ -58,13 +58,17 @@ BUILDS_IN_SOURCE = True
 QUALITY_CHECK_PRESETS: dict[str, str] = {"make_test": "test", "make_check": "check"}
 
 
+#: The suffix of an object the control file's rules compile a source to.
+OBJECT_SUFFIX = ".o"
+
+
 def object_name(logical_path: str) -> str:
     """The object basename a source compiles to. A flat `<name>.<ext>` yields `<name>.o`
     (parity with the IR-shaped Makefile); a nested path is flattened with `__` so two files with
     the same basename in different directories cannot collide. Moved unchanged from
     `codegen_bundle._object_name` (issue #424 PR-2)."""
     stem, _ = posixpath.splitext(logical_path)
-    return stem.replace("/", "__") + ".o"
+    return stem.replace("/", "__") + OBJECT_SUFFIX
 
 
 def _clean_recipe(rules: dict[str, Any]) -> str:
@@ -74,6 +78,20 @@ def _clean_recipe(rules: dict[str, Any]) -> str:
 
 def _compile(rules: dict[str, Any]) -> str:
     return f"$({rules['compiler_variable']}) $({rules['flags_variable']})"
+
+
+#: The variables that carry the external libraries the closure declares (issue #644): the include
+#: flags, which the language's flag string references, and the link-line words, at the end of
+#: every link recipe. Rendered on EVERY control file; every build passes their values on the
+#: command line (`execute.library_overrides`), empty when the closure declares none, so a later
+#: declaration changes no control file.
+LIBRARY_INCLUDE_VARIABLE = "LIBINC"
+LIBRARY_LINK_VARIABLE = "LIBS"
+_LIBRARY_VARIABLES = (
+    "# The closure's external libraries: include flags and link words. Build passes both on the\n"
+    "# command line, empty when the closure declares none.\n"
+    f"{LIBRARY_INCLUDE_VARIABLE:<8}?=\n"
+    f"{LIBRARY_LINK_VARIABLE:<8}?=\n")
 
 
 def _padded(variable: str) -> str:
@@ -153,7 +171,7 @@ OBJDIR  ?= .
 BINDIR  ?= .
 RUNDIR  ?= .
 {_padded(rules['flags_variable'])}?= {rules['flags']}
-
+{_LIBRARY_VARIABLES}
 BIN ?= {bin_name}
 SPEC ?= spec.ir.yaml
 CASES ?= {cases_default}
@@ -176,7 +194,7 @@ $(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ) | $(OBJDIR)
 \t{cc} -c $(RUNNER_SRC) -o $(RUNNER_OBJ)
 
 $(BINDIR)/$(BIN): {link_dep_prereq}$(MODEL_OBJ) $(RUNNER_OBJ) | $(BINDIR)
-\t{cc} {link_dep_prereq}$(MODEL_OBJ) $(RUNNER_OBJ) -o $(BINDIR)/$(BIN)
+\t{cc} {link_dep_prereq}$(MODEL_OBJ) $(RUNNER_OBJ) -o $(BINDIR)/$(BIN) $({LIBRARY_LINK_VARIABLE})
 
 # $(sort ...) dedups the target list: when OBJDIR==BINDIR (in-source make, both ".")
 # it collapses to a single target, avoiding the harmless `target '.' given more than
@@ -237,7 +255,7 @@ OBJDIR  ?= .
 BINDIR  ?= .
 RUNDIR  ?= .
 {_padded(rules['flags_variable'])}?= {rules['flags']}
-
+{_LIBRARY_VARIABLES}
 BIN ?= {bin_name}
 SPEC ?= spec.ir.yaml
 CASES ?= {cases_default}
@@ -250,7 +268,7 @@ all: $(BINDIR)/$(BIN)
 {rules_block}
 
 $(BINDIR)/$(BIN): {link_objs} | $(BINDIR)
-\t{cc} {link_objs} -o $(BINDIR)/$(BIN)
+\t{cc} {link_objs} -o $(BINDIR)/$(BIN) $({LIBRARY_LINK_VARIABLE})
 
 # $(sort ...) dedups the target list when OBJDIR==BINDIR (in-source make, both ".").
 $(sort $(OBJDIR) $(BINDIR)):

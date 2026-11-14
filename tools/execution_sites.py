@@ -75,12 +75,25 @@ SITES_CONFIG_RULES: frozenset[str] = frozenset({
     "sites_config_unknown_target",
 })
 
+
+@dataclass(frozen=True)
+class SiteLibrary:
+    """Where a site has one external library installed (issue #644, Part 3 P1): the directory
+    its module files are in and the directory its library files are in, each optional. Any
+    directory the operator installed into; nothing about the name is checked here (a name make
+    or the sandbox cannot take fails where it is used). Without `lib`, the compiler driver's own
+    search locates the library (`library_flags.resolve`)."""
+
+    include: str | None = None
+    lib: str | None = None
+
 _TOP_KEYS = frozenset({"sites_version", "sites", "targets"})
 _REMOTE_REQUIRED = frozenset({"host", "workdir", "executes", "scheduler"})
-_REMOTE_OPTIONAL = frozenset({"scheduler_directives", "queue_timeout_sec", "setup"})
+_REMOTE_OPTIONAL = frozenset({"scheduler_directives", "queue_timeout_sec", "setup", "libraries"})
 #: The fields that only mean something to a batch scheduler; a `none` site may not carry them.
 _SCHEDULER_ONLY = ("scheduler_directives", "queue_timeout_sec")
-_LOCAL_KEYS = frozenset({"executes"})
+_LOCAL_KEYS = frozenset({"executes", "libraries"})
+_LIBRARY_KEYS = frozenset({"include", "lib"})
 #: An ssh destination the host hands to ssh AND scp unchanged: `[user@]name`, each part a word
 #: that starts with a letter, digit or `_`. `:` and `/` are refused because scp reads
 #: `host:path` at the first `:` and treats a `/` before it as a local path — `scp f 'a/b:/x'` is
@@ -156,10 +169,17 @@ class Site:
     #: Shell lines run, in order, before anything else of a job at this site and before the
     #: launch probe's program checks: the environment the site's commands run in.
     setup: tuple[str, ...] = ()
+    #: `(library_id, SiteLibrary)` for each external library this site has installed, in the
+    #: order the file lists them (issue #644). A library the site does not list is absent here.
+    libraries: tuple[tuple[str, SiteLibrary], ...] = ()
 
     @property
     def is_local(self) -> bool:
         return self.site_id == LOCAL_SITE
+
+    def library(self, library_id: str) -> SiteLibrary | None:
+        """Where this site has `library_id` installed, or None when it does not list it."""
+        return dict(self.libraries).get(library_id)
 
 
 @dataclass(frozen=True)
@@ -237,6 +257,30 @@ def _executes(value: Any, where: str) -> tuple[str, ...]:
     return classes
 
 
+def _libraries(value: Any, where: str) -> tuple[tuple[str, SiteLibrary], ...]:
+    """A site's `libraries:` mapping: library id to `{include:, lib:}`, both optional."""
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise SitesConfigError("sites_config_invalid_field",
+                               f"must be a mapping of library id to directories, got {value!r}",
+                               where=where)
+    out: list[tuple[str, SiteLibrary]] = []
+    for library_id, body in value.items():
+        at = f"{where}.{library_id}"
+        _token(library_id, at)
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            raise SitesConfigError("sites_config_invalid_field",
+                                   f"must be a mapping with `include` and/or `lib`, got {body!r}",
+                                   where=at)
+        _check_keys(body, frozenset(), _LIBRARY_KEYS, at)
+        dirs = {key: _string(body[key], f"{at}.{key}") for key in _LIBRARY_KEYS if key in body}
+        out.append((library_id, SiteLibrary(**dirs)))
+    return tuple(out)
+
+
 def _remote_site(site_id: str, body: dict, where: str) -> Site:
     _check_keys(body, _REMOTE_REQUIRED, _REMOTE_OPTIONAL, where)
     host = _remote_safe(_string(body["host"], f"{where}.host"), f"{where}.host", spaces=False)
@@ -308,7 +352,8 @@ def _remote_site(site_id: str, body: dict, where: str) -> Site:
             for i, line in enumerate(raw))
     return Site(site_id=site_id, executes=executes, host=host, workdir=workdir,
                 scheduler=scheduler, scheduler_directives=directives,
-                queue_timeout_sec=queue_timeout, setup=setup)
+                queue_timeout_sec=queue_timeout, setup=setup,
+                libraries=_libraries(body.get("libraries"), f"{where}.libraries"))
 
 
 def _parse(doc: Any, repo_root: Path) -> tuple[dict[str, Site], dict[str, str]]:
@@ -339,9 +384,11 @@ def _parse(doc: Any, repo_root: Path) -> tuple[dict[str, Site], dict[str, str]]:
                                    f"must be a mapping, got {body!r}", where=where)
         if site_id == LOCAL_SITE:
             _check_keys(body, frozenset(), _LOCAL_KEYS, where)
-            if "executes" in body:
-                sites[LOCAL_SITE] = Site(site_id=LOCAL_SITE,
-                                         executes=_executes(body["executes"], f"{where}.executes"))
+            sites[LOCAL_SITE] = Site(
+                site_id=LOCAL_SITE,
+                executes=(_executes(body["executes"], f"{where}.executes")
+                          if "executes" in body else LOCAL_DEFAULT_EXECUTES),
+                libraries=_libraries(body.get("libraries"), f"{where}.libraries"))
             continue
         sites[site_id] = _remote_site(site_id, body, where)
     raw_targets = doc.get("targets", {})

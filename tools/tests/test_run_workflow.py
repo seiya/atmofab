@@ -1033,6 +1033,24 @@ class RunWorkflowTests(unittest.TestCase):
             wc.run_conductor = orig_rc  # type: ignore[assignment]
         return code, captured
 
+    def test_a_single_node_run_whose_library_is_unavailable_runs_nothing(self) -> None:
+        """Issue #644 (round 2, axis A F1): the single-node verdict is asked before anything
+        of the run is written; `library_unavailable` exits `LIBRARY_UNAVAILABLE_EXIT`, a
+        configuration refusal exits 2, and the conductor is not reached."""
+        for status, want in (("library_unavailable", run_workflow.LIBRARY_UNAVAILABLE_EXIT),
+                             ("fail", 2)):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_spec_tree(repo_root)
+                verdict = {"status": status, "reason": "r", "detail": "d"}
+                with mock.patch.object(run_workflow, "_library_verdict",
+                                       lambda *a, **k: verdict):
+                    code, kw = self._main_with_conductor_spy(repo_root, [
+                        "spec/problem/test.md", "build", "--orchestration-id", "orch_lu",
+                        "--mode", "dev"])
+                self.assertEqual((code, kw), (want, {}))
+                self.assertFalse((repo_root / "workspace/orchestrations/orch_lu").exists())
+
     def test_rederive_threads_into_run_conductor_on_a_cold_run_and_on_a_resume(self) -> None:
         """`--rederive` reaches the conductor on BOTH driver paths (cold single node, resume),
         parsed to the phase set; omitted, the conductor gets the empty set. The closure path
@@ -5944,6 +5962,78 @@ class DependencyClosureTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         return captured
 
+    def test_the_closure_walk_gates_each_spec_s_library_declarations(self) -> None:
+        """Issue #644: every visited spec's `libraries` names a usable declaration under
+        `spec/libraries/`, a dependency's included; a malformed list is a malformed deps.yaml."""
+        def closure(libraries_yaml: str, declare: bool):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_diamond(repo_root)
+                deps = repo_root / "spec/component/b/deps.yaml"
+                deps.write_text(deps.read_text() + libraries_yaml, encoding="utf-8")
+                if declare:
+                    (repo_root / "spec/libraries").mkdir(parents=True)
+                    (repo_root / "spec/libraries/vend.yaml").write_text(
+                        "library_version: 1\nlibrary_id: vend\nlanguage: fortran\n"
+                        "modules: []\nprocedures: [v]\nlink: [vend]\n", encoding="utf-8")
+                return run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/problem/a", _TP_RW)
+        entry = "  libraries:\n    - library_id: vend\n"
+        ordered, err = closure(entry, declare=True)
+        self.assertIsNone(err)
+        ordered, err = closure(entry, declare=False)
+        self.assertEqual((ordered, err["reason"]), ([], "library_declaration_invalid"))
+        self.assertIn("spec/component/b", err["detail"])
+        ordered, err = closure("  libraries: [vend]\n", declare=True)
+        self.assertEqual((ordered, err["reason"]), ([], "library_declaration_invalid"))
+        self.assertIn("malformed", err["detail"])
+
+    def _drive_with_verdicts(self, verdicts: dict):
+        def fake_verdict(repo_root, spec_ref, target_profile, until_phase):
+            return verdicts.get(spec_ref)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            with mock.patch.object(run_workflow, "_library_verdict", fake_verdict):
+                return self._drive_closure_raw(repo_root, resume=False,
+                                               prior_orch_by_spec=None)
+
+    def test_an_unavailable_member_is_recorded_never_run_and_the_target_ends_unavailable(
+            self) -> None:
+        """Issue #644: a member whose library cannot be used here is recorded
+        `library_unavailable` (never `skipped`, which means ready) and not run; the members
+        that can run do; the target, whose closure holds the member, ends the run with
+        `LIBRARY_UNAVAILABLE_EXIT`."""
+        unavailable = {"status": "library_unavailable", "reason": "library_not_at_site",
+                       "library_id": "vend", "site": "local", "detail": "d"}
+        rc, captured, stdout = self._drive_with_verdicts({
+            "spec/component/c": unavailable, "spec/problem/a": unavailable})
+        self.assertEqual(rc, run_workflow.LIBRARY_UNAVAILABLE_EXIT)
+        self.assertEqual([c["spec_ref"] for c in captured], ["spec/component/b"])
+        final = json.loads(stdout.strip().splitlines()[-1])
+        self.assertEqual(final["status"], "library_unavailable")
+        (record,) = [r for r in final["dependency_runs"] if r["spec_ref"] == "spec/component/c"]
+        self.assertEqual((record["status"], record["skipped"], record["library_id"]),
+                         ("library_unavailable", False, "vend"))
+
+    def test_a_target_s_own_configuration_refusal_stops_the_closure_before_any_member(
+            self) -> None:
+        """Round 1, axis B F1: the target's verdict is asked before any member is run."""
+        rc, captured, stdout = self._drive_with_verdicts({"spec/problem/a": {
+            "status": "fail", "reason": "site_library_unresolved", "detail": "d"}})
+        self.assertEqual((rc, captured), (2, []))
+        self.assertEqual(json.loads(stdout.strip().splitlines()[-1])["reason"],
+                         "site_library_unresolved")
+
+    def test_a_library_configuration_refusal_stops_the_closure_before_any_member(
+            self) -> None:
+        rc, captured, stdout = self._drive_with_verdicts({"spec/component/b": {
+            "status": "fail", "reason": "site_library_unresolved", "detail": "d"}})
+        self.assertEqual((rc, captured), (2, []))
+        self.assertEqual(json.loads(stdout.strip().splitlines()[-1])["reason"],
+                         "site_library_unresolved")
+
     def test_fresh_closure_records_closure_id_on_every_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -8853,7 +8943,9 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # 18 -> 19: issue #469's second `missing_required_python_modules` site — the packages
         # the RESOLVED target's language backend declares, checked after target resolution (the
         # first site keeps the neutral packages every run needs).
-        self.assertEqual(len(helper_calls), 19)
+        # 19 -> 20: issue #644's library verdict — `library_unavailable` and the library
+        # configuration refusals, one site, the event built by `_library_verdict`.
+        self.assertEqual(len(helper_calls), 20)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:

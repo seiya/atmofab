@@ -262,6 +262,35 @@ def checked_build_members() -> dict[str, str]:
     return members
 
 
+def library_members() -> dict[str, str]:
+    """External libraries (issue #644, Part 3 P1): the neutral seam that resolves a closure's
+    declarations at the site, composes the build's library words and the run's loader path, and
+    runs the post-build symbol checks; and — per compiler record — whether it declares
+    `library_flags` / `library_binary`, the attribute row each dispatch resolves by, and the
+    package and module files `capability_module` returns. Build links and checks with them and
+    Validate.execute runs the binary under the loader path they compose, so they are members of
+    both tuples."""
+    from tools.backends import registry
+
+    members: dict[str, str] = {
+        "tools/external_library.py": _file_digest("tools/external_library.py")}
+    for capability in ("library_flags", "library_binary"):
+        members[f"registry {capability} attr"] = registry_attr(capability)
+        for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
+            if axis != "compiler":
+                continue
+            declared = capability in record.backend_provides
+            members[f"compiler/{backend_id} {capability} declared"] = json.dumps(declared)
+            if declared:
+                package = registry.load(axis, backend_id)
+                module = registry.capability_module(axis, backend_id, capability)
+                for label, loaded in (("package", package), ("module", module)):
+                    rel = Path(loaded.__file__).resolve().relative_to(_REPO).as_posix()
+                    members[f"compiler/{backend_id} {capability} {label} {rel}"] = \
+                        _file_digest(rel)
+    return members
+
+
 def build_tuple() -> dict[str, str]:
     """The in-process build: the library's `compile_project` and its command runner, the
     conductor's build body and its dependency staging, the bundle build-graph derivation."""
@@ -333,6 +362,11 @@ def build_tuple() -> dict[str, str]:
         **{f"checked build: {k}": v for k, v in checked_build_members().items()},
         "Conductor._control_file_rules": _source_digest(wc.Conductor._control_file_rules),
         "Conductor._builds_checked": _source_digest(wc.Conductor._builds_checked),
+        # The closure's external libraries (issue #644): which ones the build links, the words
+        # make is handed, and the symbol checks over the node's own objects.
+        **{f"libraries: {k}": v for k, v in library_members().items()},
+        "Conductor._closure_libraries": _source_digest(wc.Conductor._closure_libraries),
+        "Conductor._library_build_args": _source_digest(wc.Conductor._library_build_args),
     }
 
 
@@ -451,6 +485,9 @@ def execute_tuple() -> dict[str, str]:
         "workflow_conductor._stderr_head_and_tail": _source_digest(wc._stderr_head_and_tail),
         # The bounds-checked binary's row (issue #589 PR-0): which targets run it and its shape.
         **{f"checked build: {k}": v for k, v in checked_build_members().items()},
+        # The loader path every run of a binary linking external libraries is given (issue
+        # #644), composed from the Build's recorded directories.
+        **{f"libraries: {k}": v for k, v in library_members().items()},
         "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
         "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
         **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
@@ -872,6 +909,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `problem_dependency_surface_not_step_or_init` / `problem_dependency_init_not_published` in
     # the node-identity list, and V4c-iv (a `problem` member's `operations` equal its §5.1).
     "compile-docs-34": "19eed56f9ffc4d2b301c660ac992d1ed2915cdcad070487c7560ad32328f9369",
+    # compile-docs-35: phase_01_compile.md states the `libraries` list of `dependency_surface.json` (issue #644 P1).
+    "compile-docs-35": "76b905c10c8b8591e9c3ef0db49362527085370d17524a623c17ddcc3a33f9cd",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1256,6 +1295,8 @@ PINNED_RENDER: dict[str, str] = {
     # step count, time and series there; perf counts the steps this process ran. The control
     # file's `CASES ?=` default lists the base cases (`Conductor.read_base_case_ids`, a member).
     "render-19": "25d4f625ec8f39ab1d3df26ce44666785e6c801846c18134be12b7d1c0b9b7cb",
+    # render-20: every control file declares LIBINC/LIBS and the flag string references $(LIBINC) (issue #644 P1).
+    "render-20": "9beddb37541b9193256787b04d308b31a230aebb066edc8b9add7fe605ca0665",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:
@@ -1569,6 +1610,8 @@ PINNED_BUILD: dict[str, str] = {
     # variable are spelled `spec2science-*` / `spec2science_setup_line`; the job script and the
     # reader of its output are the same module and move together, and no build output moves.
     "build-4": "a26c5e752d6e83f924bb8401485db6dfccf2c1d83f673aa44b90f55f9da5d20e",
+    # build-5: the library variables on every build, the post-build symbol checks, the library members (issue #644 P1).
+    "build-5": "061cd7e29290976e3858f2c8b953f756e44d2544d41ed4ec145bf4b1587e3dc3",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
@@ -1919,6 +1962,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # started and merges its captures (`Conductor._merge_continuation_captures`, a member); the case
     # file of a loop node carries `restart.step`.
     "execute-18": "455401740956c07c7757572260025941d80ab30f009777f32e08a54ac14bea97",
+    # execute-19: the loader path of the Build's library directories on every run, the library members (issue #644 P1).
+    "execute-19": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

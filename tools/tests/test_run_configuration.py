@@ -228,6 +228,21 @@ class RunConfigurationTest(unittest.TestCase):
             self.assertEqual(got.get(key), value, key)
         self.assertEqual(self.record()["launch_env"], dict(sorted(want.items())))
 
+    def test_the_run_loads_from_the_library_directories_its_build_recorded(self) -> None:
+        """Issue #644: the run is given the Build's `binary_meta.json#library_dirs` ahead of the
+        inherited loader path, and the record carries the directories, never the joined value."""
+        refs = self.certify(exe_bytes=b"#!/bin/sh\nenv > env.txt\n" + FINAL)
+        meta = self.repo / refs["binary_meta"]
+        doc = json.loads(meta.read_text())
+        doc["library_dirs"] = ["/opt/zz/lib"]
+        meta.write_text(json.dumps(doc))
+        with mock.patch.dict(os.environ, {"LD_LIBRARY_PATH": "/inherited"}):
+            self.assertEqual(self.run_tool({"base_case": "m0"}), 0)
+        got = dict(line.split("=", 1) for line in
+                   (self.tmp / "out" / "env.txt").read_text().splitlines() if "=" in line)
+        self.assertEqual(got.get("LD_LIBRARY_PATH"), "/opt/zz/lib:/inherited")
+        self.assertEqual(self.record()["library_dirs"], ["/opt/zz/lib"])
+
     # --- refusals ---------------------------------------------------------------------------
 
     def test_configuration_refusals(self) -> None:

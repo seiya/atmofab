@@ -200,7 +200,7 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(
             (collected / "build_checked" / "flags.txt").read_text().strip(),
             " ".join([rules["flags"], *checked_flags_for(n.target)]).replace(
-                "$(OBJDIR)", f"{n.job}/build_checked"))
+                "$(OBJDIR)", f"{n.job}/build_checked").replace("$(LIBINC)", ""))
         self.assertEqual((collected / "build" / "flags.txt").read_text().strip(), "")
         # The checked build's output is localized too: the site's job-directory paths in it
         # name the local directories they stand for.
@@ -220,10 +220,12 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         jobs = _build_runtime().default_build_jobs()
         self.assertEqual(entry["command"], _build_runtime().build_command(
             "make", None, jobs,
-            [f"OBJDIR={n.obj}", f"BINDIR={n.bin}", "BIN=spec_x_runner"]))
+            # The library variables (issue #644) lead, empty: this closure declares none.
+            ["LIBINC=", "LIBS=", f"OBJDIR={n.obj}", f"BINDIR={n.bin}", "BIN=spec_x_runner"]))
         self.assertEqual(entry["site"]["remote_command"], _build_runtime().build_command(
             "make", None, jobs,
-            [f"OBJDIR={n.job}/build", f"BINDIR={n.job}/bin", "BIN=spec_x_runner"]))
+            ["LIBINC=", "LIBS=", f"OBJDIR={n.job}/build", f"BINDIR={n.job}/bin",
+             "BIN=spec_x_runner"]))
         self.assertEqual(entry["site"]["remote_cwd"], f"{n.job}/src")
         self.assertEqual(entry["timeout_sec"], _build_runtime().COMPILE_PROJECT_TIMEOUT_SEC)
         # The site's diagnostics are kept whole, as the local build keeps them.
@@ -239,12 +241,14 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         rules, flags = control_file_rules(n.target), checked_flags_for(n.target)
         self.assertEqual(checked["tool_name"], "compile_project")
         self.assertEqual(checked["command"], _build_runtime().build_command(
-            "make", None, jobs, list(execute.checked_build_overrides(
-                str(n.obj_checked), str(bin_checked), "spec_x_runner", rules, flags))))
+            "make", None, jobs, [
+                *execute.library_overrides("", ""), *execute.checked_build_overrides(
+                str(n.obj_checked), str(bin_checked), "spec_x_runner", rules, flags)]))
         self.assertEqual(checked["site"]["remote_command"], _build_runtime().build_command(
-            "make", None, jobs, list(execute.checked_build_overrides(
+            "make", None, jobs, [
+                *execute.library_overrides("", ""), *execute.checked_build_overrides(
                 f"{n.job}/build_checked", f"{n.job}/bin_checked", "spec_x_runner", rules,
-                flags))))
+                flags)]))
         record = n.meta()["checked_build"]
         self.assertEqual((record["command_id"], record["argv"], record["obj_dir"],
                           record["bin_dir"]),

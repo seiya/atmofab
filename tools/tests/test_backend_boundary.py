@@ -2251,7 +2251,13 @@ class RegistryConsistencyTests(unittest.TestCase):
                       "syntax_check", "syntax_promotions", "prompt_fragments",
                       "source_reading", "signatures", "parallel_directives",
                       "interface_header", "job_submit", "device_trace", "launcher",
-                      "compiler_wrapper", "checked_flags"}
+                      "compiler_wrapper", "checked_flags", "library_flags", "library_binary"}
+        # `library_flags` and `library_binary` joined them with issue #644 (Part 3 P1):
+        # `tools/external_library.py` asks the target compiler's record
+        # (`missing_capability_reason`) and `capability_module` for both, to resolve and link a
+        # closure's external libraries, compose the run's loader path and read the symbol
+        # tables of the post-build checks; `tools/host_prerequisites.py` asks for the second's
+        # programs.
         # `checked_flags` joined them with issue #589 PR-0: `tools/checked_build.py`
         # (`checked_flags_for`) asks the target compiler's record and `capability_module` for
         # the flags of the bounds-checked second build, which the conductor's Build and
@@ -2564,7 +2570,7 @@ class RegistryConsistencyTests(unittest.TestCase):
                 self.assertEqual(
                     set(inspect.signature(module.argv).parameters),
                     {"standard", "scratch_dir", "parallel_backend", "promotions",
-                     "architecture", "sources"})
+                     "architecture", "sources", "include_dirs"})
 
     #: What each LANGUAGE capability's readers take off its module (issue #289, R4-b PR-2;
     #: round 3 found `prompt_fragments.runner_output_document` stated nowhere and checked by
