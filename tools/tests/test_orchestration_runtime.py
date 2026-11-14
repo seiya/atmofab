@@ -30743,8 +30743,12 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         import importlib
 
         import tools.orchestration_runtime as ort
-        self.assertEqual({k for k, _f in ort._DEPS_KEY_KIND_FIELDS},
+        # The allowed keys are the paired ones plus the non-node ones (issue #644:
+        # `libraries`), disjoint.
+        self.assertEqual({k for k, _f in ort._DEPS_KEY_KIND_FIELDS} | ort._DEPS_NON_NODE_KEYS,
                          set(ort._DEPS_YAML_ALLOWED_KEYS))
+        self.assertEqual(ort._DEPS_NON_NODE_KEYS, {"libraries"})
+        self.assertFalse({k for k, _f in ort._DEPS_KEY_KIND_FIELDS} & ort._DEPS_NON_NODE_KEYS)
         self.assertIn(("problems", "problem_id"), ort._DEPS_KEY_KIND_FIELDS)
         self.assertNotIn("problems", ort._DEPS_YAML_REQUIRED_KEYS)
         self.assertLessEqual(ort._DEPS_YAML_REQUIRED_KEYS, ort._DEPS_YAML_ALLOWED_KEYS)
@@ -30757,8 +30761,15 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         spec = importlib.util.spec_from_loader("_ort_broken_tables", loader=None)
         module = importlib.util.module_from_spec(spec)
         module.__dict__["__file__"] = ort.__file__
-        with self.assertRaisesRegex(AssertionError, "must name the same deps.yaml keys"):
+        with self.assertRaisesRegex(AssertionError, "disjoint union"):
             exec(compile(broken, ort.__file__, "exec"), module.__dict__)
+        # A key both paired and non-node is refused too (its entries would be parsed twice).
+        overlap = source.replace('_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset({"libraries"})',
+                                 '_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset('
+                                 '{"libraries", "problems"})', 1)
+        self.assertNotEqual(overlap, source)
+        with self.assertRaisesRegex(AssertionError, "disjoint union"):
+            exec(compile(overlap, ort.__file__, "exec"), module.__dict__)
 
     def test_a_profile_declaring_a_problem_is_refused(self) -> None:
         """D7: once `problems` is an allowed key, a profile's `problems:` entry would parse

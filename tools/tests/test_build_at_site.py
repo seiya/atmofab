@@ -200,7 +200,7 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(
             (collected / "build_checked" / "flags.txt").read_text().strip(),
             " ".join([rules["flags"], *checked_flags_for(n.target)]).replace(
-                "$(OBJDIR)", f"{n.job}/build_checked"))
+                "$(OBJDIR)", f"{n.job}/build_checked").replace("$(LIBINC)", ""))
         self.assertEqual((collected / "build" / "flags.txt").read_text().strip(), "")
         # The checked build's output is localized too: the site's job-directory paths in it
         # name the local directories they stand for.
@@ -220,10 +220,12 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         jobs = _build_runtime().default_build_jobs()
         self.assertEqual(entry["command"], _build_runtime().build_command(
             "make", None, jobs,
-            [f"OBJDIR={n.obj}", f"BINDIR={n.bin}", "BIN=spec_x_runner"]))
+            # The library variables (issue #644) lead, empty: this closure declares none.
+            ["LIBINC=", "LIBS=", f"OBJDIR={n.obj}", f"BINDIR={n.bin}", "BIN=spec_x_runner"]))
         self.assertEqual(entry["site"]["remote_command"], _build_runtime().build_command(
             "make", None, jobs,
-            [f"OBJDIR={n.job}/build", f"BINDIR={n.job}/bin", "BIN=spec_x_runner"]))
+            ["LIBINC=", "LIBS=", f"OBJDIR={n.job}/build", f"BINDIR={n.job}/bin",
+             "BIN=spec_x_runner"]))
         self.assertEqual(entry["site"]["remote_cwd"], f"{n.job}/src")
         self.assertEqual(entry["timeout_sec"], _build_runtime().COMPILE_PROJECT_TIMEOUT_SEC)
         # The site's diagnostics are kept whole, as the local build keeps them.

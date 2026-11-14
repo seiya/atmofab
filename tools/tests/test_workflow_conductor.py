@@ -17178,8 +17178,11 @@ class DeterministicBuildTest(unittest.TestCase):
                 mock.patch.object(control_file, "CONTROL_FILE_BASENAME", "ZZcontrol"):
             refs, meta = self._binary_missing_build(Path(td), seen)
         (args,) = seen
-        self.assertEqual([a.split("=", 1)[0] for a in args["extra_args"]], ["ZZ_OBJ", "ZZ_EXE"])
-        self.assertEqual(args["extra_args"][1], "ZZ_EXE=spec_x_runner")
+        # The library variables (issue #644) lead, empty for a closure that declares none.
+        self.assertEqual([a.split("=", 1)[0] for a in args["extra_args"]],
+                         ["LIBINC", "LIBS", "ZZ_OBJ", "ZZ_EXE"])
+        self.assertEqual(args["extra_args"][:2], ["LIBINC=", "LIBS="])
+        self.assertEqual(args["extra_args"][3], "ZZ_EXE=spec_x_runner")
         self.assertEqual(meta["failure_category"], "zz_category")
         self.assertTrue(meta["failure_excerpt"].endswith("; zz rule"), meta["failure_excerpt"])
 
@@ -17912,7 +17915,7 @@ class DeterministicBuildTest(unittest.TestCase):
             env = trial["environment"]
             self.assertEqual(set(env), {"target_id", "target_class", "backend",
                                         "threads_per_rank", "ranks", "launch", "sweep",
-                                        "serial_reference_env", "platform",
+                                        "serial_reference_env", "library_dirs", "platform",
                                         "execution_site"})
             # The sweep's shapes and launches, and the serial reference's environment (#512).
             from tools.host_execution import launch_shape, serial_execution_env
@@ -18274,7 +18277,7 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual(trial["environment"]["launch"], shape.record())
         self.assertEqual(set(trial["environment"]),
                          {"target_id", "target_class", "backend", "threads_per_rank", "ranks",
-                          "launch", "sweep", "serial_reference_env", "platform",
+                          "launch", "sweep", "serial_reference_env", "library_dirs", "platform",
                           "execution_site"})
         self.assertEqual(trial["environment"]["sweep"], [])
         self.assertEqual(trial["environment"]["ranks"], 1)

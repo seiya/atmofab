@@ -3164,7 +3164,8 @@ class RealDriverTests(unittest.TestCase):
                                           promotions=(), architecture=None,
                                           sources=["c_model.cu", "p.cu"]))
             self.assertEqual(0, syntax.returncode, syntax.stderr[-2000:])
-            flags = cpp_control_file.flags("c++17", None).replace("$(OBJDIR)", ".").split()
+            flags = cpp_control_file.flags("c++17", None).replace("$(OBJDIR)", ".").replace(
+                "$(LIBINC)", "").split()
             for src in ("c_model.cu", "p.cu"):
                 built = run([NVCC, *flags, "-c", src, "-o", src.replace(".cu", ".o")])
                 self.assertEqual(0, built.returncode, built.stderr[-2000:])

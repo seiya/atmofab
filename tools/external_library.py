@@ -186,11 +186,15 @@ def declaration_violation(repo_root: str | Path, library_ids: Iterable[str]) -> 
 
 
 def node_library_ids(repo_root: str | Path, spec_ref: str) -> list[str]:
-    """The libraries `spec_ref`'s own deps.yaml declares, in declared order. A deps.yaml the
-    caller has not already found well formed raises `LibraryDeclarationError`."""
+    """The libraries `spec_ref`'s own deps.yaml declares, in declared order: none when there is
+    no readable deps.yaml (the closure walk refuses a node without one before any phase,
+    `dependency_deps_unreadable`); `LibraryDeclarationError` for a malformed `libraries`
+    list."""
     from tools.orchestration_runtime import _parse_library_entries, _read_deps_yaml
     doc = _read_deps_yaml(Path(repo_root), spec_ref)
-    ids, well_formed = _parse_library_entries(doc) if isinstance(doc, dict) else ([], False)
+    if not isinstance(doc, dict):
+        return []
+    ids, well_formed = _parse_library_entries(doc)
     if not well_formed:
         raise LibraryDeclarationError(
             f"{spec_ref}/deps.yaml: `dependencies.libraries` is unreadable or malformed")
@@ -213,17 +217,17 @@ def closure_declarations(repo_root: str | Path, spec_ref: str,
                          closure_node_keys: Sequence[str]) -> list[LibraryDeclaration]:
     """The declarations of the libraries a build of the node at `spec_ref` links, in closure
     order: the node's own, then those of its pipeline closure (`pipeline_closure_nodes`, the
-    target's harness included), each once. `LibraryDeclarationError` when a closure node's spec
-    does not resolve or a declaration is unusable."""
+    target's harness included), each once. A closure node whose spec the catalog does not
+    resolve contributes none: the closure walk resolved every member through the same catalog
+    before any phase. `LibraryDeclarationError` when a declaration is unusable."""
     from tools.orchestration_runtime import resolve_spec_ref_for
     refs: list[str] = []
     for node_key in closure_node_keys:
         kind_rest = node_key.partition("@")[0]
         kind, _, spec_id = kind_rest.partition("/")
         ref = resolve_spec_ref_for(Path(repo_root), kind, spec_id)
-        if ref is None:
-            raise LibraryDeclarationError(f"closure node {node_key!r} resolves to no spec")
-        refs.append(ref)
+        if ref is not None:
+            refs.append(ref)
     return [load_declaration(repo_root, library_id)
             for library_id in closure_library_ids(repo_root, spec_ref, refs)]
 
@@ -327,27 +331,26 @@ def resolve_closure(repo_root: str | Path, target: Any,
     return [resolve(d, site, compiler) for d in declarations]
 
 
-def node_libraries(repo_root: str | Path, spec_ref: str, ir_ref: str, node_key: str,
-                   target: Any) -> list[ResolvedLibrary]:
-    """`resolve_closure` over the declarations of the node's pipeline closure for `target`
-    (`orchestration_runtime.pipeline_closure_nodes`), for a reader outside the conductor."""
-    from tools.orchestration_runtime import pipeline_closure_nodes
-    return resolve_closure(repo_root, target, closure_declarations(
-        repo_root, spec_ref, pipeline_closure_nodes(Path(repo_root), ir_ref, node_key, target)))
-
-
-def loader_env(target: Any, resolved: Sequence[ResolvedLibrary],
-               inherited_env: Any) -> dict[str, str]:
-    """The loader-path overlay a run of a binary linking `resolved` takes: `{}` for none, else
-    the target compiler's `library_binary.loader_env` — the library directories prefixed to the
-    loader variable's value in `inherited_env` (the environment the run would otherwise see:
-    the host process's for a host run, the wrapper's base environment for a workshop run)."""
-    if not resolved:
+def loader_env(target: Any, dirs: Sequence[str], inherited_env: Any) -> dict[str, str]:
+    """The loader-path overlay a run of a binary linking libraries in `dirs` takes: `{}` for
+    none, else the target compiler's `library_binary.loader_env` — the directories prefixed to
+    the loader variable's value in `inherited_env` (the environment the run would otherwise
+    see: the host process's for a host run, the wrapper's base environment for a workshop
+    run)."""
+    if not dirs:
         return {}
     from tools.checked_build import target_compiler
     binary = registry.capability_module("compiler", target_compiler(target), "library_binary")
     inherited = (inherited_env or {}).get(str(binary.LOADER_VARIABLE))
-    return dict(binary.loader_env(library_dirs(resolved), inherited))
+    return dict(binary.loader_env(list(dirs), inherited))
+
+
+def built_library_dirs(binary_meta: Any) -> tuple[str, ...]:
+    """The library directories a Build recorded for the binary it linked
+    (`binary_meta.json#library_dirs`); empty for a binary of a closure that declares none, and
+    for one built before the field existed (which declared none either)."""
+    dirs = binary_meta.get("library_dirs") if isinstance(binary_meta, dict) else None
+    return tuple(str(d) for d in dirs) if isinstance(dirs, list) else ()
 
 
 def declared_identity(declarations: Sequence[LibraryDeclaration]) -> list[dict[str, Any]]:

@@ -6192,7 +6192,7 @@ class Conductor:
         the run would otherwise see: this process's for a host run, the wrapper's base
         environment for a workshop run)."""
         from tools import external_library as xl
-        return xl.loader_env(self.target, libraries, inherited_env)
+        return xl.loader_env(self.target, xl.library_dirs(libraries), inherited_env)
 
     def _pipeline_dependency_block(self, refs: NodeRefs, block: Any) -> dict[str, Any]:
         """A dependency block (the IR's `dependency`, or the closure sidecar) as this node's
@@ -11376,6 +11376,7 @@ class Conductor:
         # the copy is re-hashed against them; a failing build records them too: the binding
         # describes what was linked, not whether linking succeeded.
         closure_bindings = self._stage_dependency_sources(refs, obj_dir, phase="build")
+        from tools import external_library as xl
         libraries = self._closure_libraries(refs)
         if checked_flags:
             # The same bound sources, staged again: make compiles the closure FROM the object
@@ -11575,7 +11576,6 @@ class Conductor:
         if ok and libraries:
             # The objects THIS node's leaf authored: every object the build left except the
             # staged closure's (checked in their own Builds) and the host-rendered runner's.
-            from tools import external_library as xl
             facts = self._language_facts()
             foreign = {control_file.object_name(facts.model_basename(spec_id_of(nk)))
                        for nk in self._dependency_closure_nodes(refs)}
@@ -11679,8 +11679,11 @@ class Conductor:
             "dependency_check": {"direct_deps": dep_keys,
                                  "resolved": "match" if ok else "unresolved",
                                  "closure_bindings": closure_bindings},
-            # The closure's external libraries and the symbol checks over the node's own
-            # objects (issue #644); null when the closure declares none.
+            # The closure's external libraries (issue #644): the directories every run of this
+            # binary is given ahead of its inherited loader path (Validate.execute and
+            # `run_configuration.py` read them here), and the symbol checks over the node's own
+            # objects (null when the closure declares none).
+            "library_dirs": list(xl.library_dirs(libraries)),
             "library_check": library_check,
             "failure_category": None,
             "failure_excerpt": None,
@@ -13413,9 +13416,11 @@ class Conductor:
         # run's environment below (the trace summary's excepted: it runs no binary of ours).
         # Recorded as the directories alone (`environment.library_dirs`), never the joined
         # value, so the host's own loader path stays out of the record.
+        # The directories come from the Build that linked this binary
+        # (`binary_meta.json#library_dirs`), so the run loads from where it was linked.
         from tools import external_library as xl
-        libraries = self._closure_libraries(refs)
-        lib_env = self._library_loader_env(libraries, os.environ)
+        library_dirs = xl.built_library_dirs(_read_json(bin_dir.parent / "binary_meta.json"))
+        lib_env = xl.loader_env(target, library_dirs, os.environ)
         checked_env = {**serial_execution_env(target.parallel_backend, target.block_size),
                        **lib_env}
         ir_spec = (self.repo_root / refs.ir_ref / "spec.ir.yaml").resolve()
@@ -14171,7 +14176,7 @@ class Conductor:
                     target.parallel_backend, target.block_size).items())),
                 # The external libraries' directories every run above was given ahead of its
                 # inherited loader path (issue #644); empty when the closure declares none.
-                "library_dirs": list(xl.library_dirs(libraries)),
+                "library_dirs": list(library_dirs),
                 # The host this evidence was produced on (issue #250): RECORDED, not keyed —
                 # no verdict predicate depends on the machine yet, and the day a perf or
                 # cross-target predicate does, the execute inputs gain one line and read this.

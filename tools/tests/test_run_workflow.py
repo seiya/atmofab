@@ -8853,7 +8853,9 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # 18 -> 19: issue #469's second `missing_required_python_modules` site — the packages
         # the RESOLVED target's language backend declares, checked after target resolution (the
         # first site keeps the neutral packages every run needs).
-        self.assertEqual(len(helper_calls), 19)
+        # 19 -> 20: issue #644's library verdict — `library_unavailable` and the library
+        # configuration refusals, one site, the event built by `_library_verdict`.
+        self.assertEqual(len(helper_calls), 20)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:

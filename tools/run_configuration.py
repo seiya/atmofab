@@ -729,10 +729,11 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
     # loader path, as the certifying run had them; recorded as the directories alone.
     from tools import external_library as xl
     try:
-        libraries = xl.node_libraries(repo_root, spec_ref, sel.ir_ref, sel.node_key, sel.profile)
-    except (xl.LibraryUnusable, xl.LibraryDeclarationError) as exc:
-        raise ConfigurationRefused(f"{sel.node_key}: {exc}") from None
-    env = {**os.environ, **launch.env, **xl.loader_env(sel.profile, libraries, os.environ)}
+        built = json.loads((sel.binary.parent.parent / "binary_meta.json").read_text())
+    except (OSError, ValueError):
+        built = None
+    library_dirs = xl.built_library_dirs(built)
+    env = {**os.environ, **launch.env, **xl.loader_env(sel.profile, library_dirs, os.environ)}
     record: dict[str, Any] = {
         "statement": NOT_A_CERTIFICATION,
         "node_key": sel.node_key, "target_id": sel.profile.target_id,
@@ -742,7 +743,7 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         "configuration": {"base_case": base, "inputs": overrides, "file": str(Path(config).resolve()),
                           "text": config_text},
         "restart": restart, "command": cmd, "launch_env": dict(sorted(launch.env.items())),
-        "library_dirs": list(xl.library_dirs(libraries)),
+        "library_dirs": list(library_dirs),
         "cwd": str(out), "timeout_sec": timeout_sec, "started_at": _now(),
         "status": "running", "exit_status": None, "timed_out": False, "start_check": None,
         "final_step": None, "kernel": None, "binary_pgid": None,
