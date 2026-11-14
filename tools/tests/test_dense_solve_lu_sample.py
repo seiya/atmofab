@@ -7,8 +7,11 @@ on the hand transcription `data/drive_ir/pr3_evidence/ir/dense_solve_lu.yaml`, a
 predicate is evaluated by the host evaluator. The rows pin that
 
 * the unmutated model has every test at its expected outcome;
-* each seeded defect of `dense_solve_lu_mutants.yaml` moves exactly the tests it names, so a
-  suite edit that stops judging one of them is red here before a billed run meets it;
+* each seeded defect of `dense_solve_lu_mutants.yaml` moves exactly the tests it names, so an
+  edit of the hand IR that stops judging one of them is red here. `tests.md` is held to the
+  hand IR by `test_transcription_compile_static_accepts_dense_solve_lu`
+  (`test_spec_corpus_versions.py`), which compares the test ids, outcomes and quantities and
+  no bound: a bound widened in `tests.md` alone is red nowhere;
 * a model that never reaches the library passes the suite and is refused by the post-build
   symbol check, the one thing that tells it from a conforming model;
 * a source that calls the library the way the leaf is told to
