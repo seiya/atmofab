@@ -2584,7 +2584,7 @@ def _stamped_library_files(recorded: Any, computed: Sequence[Mapping[str, Any]]
     if not isinstance(stamped, list) or len(stamped) != len(computed):
         return None
     for entry, mine in zip(stamped, computed):
-        if not (isinstance(entry, Mapping) and "files" in entry
+        if not (isinstance(entry, Mapping)
                 and entry.get("library_id") == mine.get("library_id")
                 and entry.get("declaration_sha256") == mine.get("declaration_sha256")):
             return None

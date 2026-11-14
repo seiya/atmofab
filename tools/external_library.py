@@ -256,7 +256,7 @@ def resolve(declaration: LibraryDeclaration, site: Any, compiler: str) -> Resolv
     binary = registry.capability_module("compiler", compiler, "library_binary")
     link_files: list[tuple[str, str]] = []
     soname_files: list[tuple[str, str]] = []
-    lib_dir = entry.lib
+    lib_dir = os.path.normpath(entry.lib) if entry.lib else None
     for name in declaration.link:
         path = flags.resolve(name, entry.lib)
         if path is None:
@@ -364,14 +364,14 @@ def declared_identity(declarations: Sequence[LibraryDeclaration]) -> list[dict[s
 
 def identity(resolved: Sequence[ResolvedLibrary]) -> list[dict[str, Any]]:
     """The build key's `libraries` member: per library, in closure order, the id, the
-    declaration's hash, the directories (the binary records the library directories it is run
-    with, so a library moved to another directory with the same bytes is another build), and
-    the content hash of every declared file at the site."""
+    declaration's hash, the library directories (the binary records them and every run loads
+    from them, so a library moved to another directory with the same bytes is another build),
+    and the content hash of every declared file at the site. The include directory is not a
+    member: the module files are hashed by content and nothing records where they were."""
     return [
         {"library_id": r.declaration.library_id,
          "declaration_sha256": r.declaration.sha256,
-         "directories": {"include": r.include_dir,
-                         "lib": list(dict.fromkeys(_own_lib_dirs(r)))},
+         "lib_dirs": list(dict.fromkeys(_own_lib_dirs(r))),
          "files": {
              "link": {name: _file_sha256(path) for name, path in r.link_files},
              "soname": {name: _file_sha256(path) for name, path in r.soname_files},
@@ -422,12 +422,16 @@ def bind_roots(resolved: Sequence[ResolvedLibrary]) -> tuple[str, ...]:
                 hop_dirs.append(os.path.dirname(current))
                 if not os.path.islink(current):
                     break
-                current = os.path.normpath(os.path.join(os.path.dirname(current),
-                                                        os.readlink(current)))
+                # A relative link resolves against the directory it really sits in.
+                current = os.path.normpath(os.path.join(
+                    os.path.realpath(os.path.dirname(current)), os.readlink(current)))
     roots: list[str] = []
     for d in (*include_dirs(resolved), *library_dirs(resolved), *hop_dirs):
+        # The real-path form: no row shows it needed beside the hop walk, and none shows it
+        # not (not pinned). A directory that does not exist is not bound: bwrap would refuse
+        # the whole command for it.
         for form in (d, os.path.realpath(d)):
-            if form not in roots:
+            if form not in roots and os.path.isdir(form):
                 roots.append(form)
     return tuple(roots)
 

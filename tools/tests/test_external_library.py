@@ -357,7 +357,7 @@ class ResolveTests(_Fixture):
                     self.assertEqual(before, xl.identity(self.resolved()))
         decls = [xl.load_declaration(self.repo, i) for i in ("vend", "foo")]
         self.assertEqual(xl.declared_identity(decls), [
-            {k: v for k, v in entry.items() if k not in ("files", "directories")}
+            {k: v for k, v in entry.items() if k not in ("files", "lib_dirs")}
             for entry in before])
 
     def test_the_identity_moves_with_the_directories(self) -> None:
@@ -371,7 +371,11 @@ class ResolveTests(_Fixture):
             after = xl.identity(self.resolved(("foo",)))
         self.assertEqual(before[0]["files"], after[0]["files"])
         self.assertNotEqual(before, after)
-        self.assertEqual(after[0]["directories"], {"include": None, "lib": [str(lib)]})
+        self.assertEqual(after[0]["lib_dirs"], [str(lib)])
+        # A non-normalised spelling of the same directory is the same directory (round 2).
+        write_sites(self.repo, self.dirs, libraries=f"      foo: {{lib: {self.dirs['lib']}/./}}\n")
+        self.assertEqual(xl.identity(self.resolved(("foo",))), before)
+        self.assertEqual(xl.library_dirs(self.resolved(("foo",))), (str(self.dirs["lib"]),))
 
     def test_link_names_found_in_several_directories_load_from_each(self) -> None:
         """Without `lib:`, the compiler's search may find two link names in two directories;
@@ -432,6 +436,24 @@ class ResolveTests(_Fixture):
         with self.assertRaises(xl.LibraryUnusable) as cm:
             self.resolved(("foo",))
         self.assertEqual(cm.exception.reason, xl.REMOTE_SITE)
+
+    def test_a_hop_that_leads_nowhere_binds_no_missing_directory(self) -> None:
+        """A relative link resolved against its real directory, and no directory bound that
+        does not exist (bwrap refuses the whole command for one; round 2)."""
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "deep/a/b/lib"
+            real.mkdir(parents=True)
+            (Path(td) / "deep/a/z").mkdir()
+            shutil.copy2(self.dirs["lib"] / "libbar.so.1", Path(td) / "deep/a/z/libq.so")
+            os.symlink("../../z/libq.so", real / "libq.so")
+            (Path(td) / "pfx").mkdir()
+            os.symlink(real, Path(td) / "pfx/lib")
+            decl = xl.LibraryDeclaration("q", "fortran", (), (), ("q",), "0" * 64)
+            r = xl.ResolvedLibrary(decl, None, str(Path(td) / "pfx/lib"),
+                                   (("q", str(Path(td) / "pfx/lib/libq.so")),), (), ())
+            roots = xl.bind_roots([r])
+            self.assertIn(str(Path(td) / "deep/a/z"), roots)
+            self.assertTrue(all(os.path.isdir(d) for d in roots), roots)
 
     def test_unavailable_and_refused_closures(self) -> None:
         decls = [xl.load_declaration(self.repo, "foo")]
