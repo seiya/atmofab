@@ -141,7 +141,11 @@ AXES: dict[str, Axis] = {
         description=(
             "The compiler front end the syntax-only gate drives: its argv, its diagnostic "
             "format, and which of its warnings the gate promotes to errors; and the flags a "
-            "second, bounds-checked build of the certified sources adds (`checked_flags`)."
+            "second, bounds-checked build of the certified sources adds (`checked_flags`); "
+            "how a build reaches an operator-installed external library and what the binary "
+            "and its objects then read (`library_flags`, `library_binary`). The library "
+            "knowledge lives on this axis rather than a new one because the compiler driver "
+            "chooses the linker and, through it, the dynamic loader's input."
         ),
     ),
     "linter": Axis(
@@ -274,6 +278,22 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
          "the capability is refused (`tools/checked_build.py`, `checked_flags_for`), so a new "
          "compiler cannot skip the row by omission."),
     ),
+    "library_flags": (
+        ("compiler",),
+        ("The words a build adds to reach an external library the closure declares "
+         "(`spec/libraries/<id>.yaml`) at the directories the site lists (`sites.yaml`): the "
+         "include flags, the link-line words (the resolved files by path, and the option that "
+         "finds a library's own dependencies at link time), the file a link name resolves to "
+         "and the file a module is read from (issue #644). A target whose compiler does not "
+         "declare it cannot build a closure that declares a library."),
+    ),
+    "library_binary": (
+        ("compiler",),
+        ("What a binary this compiler links reads at run time and what its objects' symbol "
+         "tables say: the loader variable and how library directories are prefixed to it, a "
+         "shared object's load name, and an object's imported and defined symbols and a "
+         "library's exported ones, which the post-build library checks read (issue #644)."),
+    ),
     "lint": (
         ("linter",),
         "The static-lint step can run this linter and read its findings.",
@@ -399,6 +419,8 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "syntax_check": "syntax",
     "syntax_promotions": "syntax",
     "checked_flags": "checked_flags",
+    "library_flags": "library_flags",
+    "library_binary": "library_binary",
     "prompt_fragments": "prompts",
     "source_reading": "source",
     "signatures": "signatures",
@@ -488,10 +510,12 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         ),
         # Extracted for its syntax-only adapter (issue #289, R4-b PR-2): the argv, the canary and
         # the version probe `run_syntax_check` used to hold inline. `checked_flags` since issue
-        # #589 PR-0: the flags of the bounds-checked second build.
+        # #589 PR-0: the flags of the bounds-checked second build. `library_flags` and
+        # `library_binary` since issue #644 (Part 3 P1): reaching an external library.
         Backend(
             "compiler", "gfortran", "tools.backends.compiler.gfortran",
-            backend_provides=frozenset({"syntax_check", "checked_flags"}),
+            backend_provides=frozenset({"syntax_check", "checked_flags", "library_flags",
+                                        "library_binary"}),
         ),
         # The CUDA compiler driver's syntax-only adapter (issue #289, R4-b PR-4), and its
         # `checked_flags`, which are none (issue #589 PR-0 decision 3).

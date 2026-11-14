@@ -46,7 +46,8 @@ STANDARD_SPELLING_EXAMPLE = "`f2008`, not `2008`"
 
 
 def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
-         promotions: tuple[str, ...], architecture: str | None, sources: list[str]) -> list[str]:
+         promotions: tuple[str, ...], architecture: str | None, sources: list[str],
+         include_dirs: tuple[str, ...] = ()) -> list[str]:
     """The syntax-only command line.
 
     `scratch_dir` receives the module files the front end writes even under `-fsyntax-only`
@@ -59,11 +60,12 @@ def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
     stages cannot disagree on one value (the profile loader admits lowercase tokens only, and
     `run_syntax_check` normalises a direct caller's spelling before calling this). `promotions`
     come first after the mode flags; the sources stay last so the compiler reads them after the
-    module-directory flags.
+    module-directory flags. `include_dirs` are the external libraries' module directories
+    (issue #644), searched after the scratch directory.
     """
     del architecture  # accepted, not read (see the docstring)
     command = [EXECUTABLE, "-fsyntax-only", f"-std={standard}", *promotions,
-               "-J", scratch_dir, "-I", scratch_dir]
+               "-J", scratch_dir, "-I", scratch_dir, *(f"-I{d}" for d in include_dirs)]
     if parallel_backend == "openmp":
         command.append("-fopenmp")
     return command + list(sources)

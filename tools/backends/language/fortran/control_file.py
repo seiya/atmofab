@@ -25,11 +25,13 @@ def flags(standard: str, parallel_backend: str) -> str:
     directory the build system passes as `object_dir`. `-fopenmp` is the OpenMP backend's switch
     as this language's default compiler spells it; it enables the directives a source carries and
     adds none (why every node of a target takes it, the harness included, is the conductor's
-    `_write_makefile` docstring)."""
+    `_write_makefile` docstring). `$(LIBINC)` is the include flags of the external libraries the
+    closure declares (issue #644), which every build passes on the command line, empty when it
+    declares none, so a later declaration changes no control file."""
     value = f"-std={standard} -O2"
     if parallel_backend == "openmp":
         value += " -fopenmp"
-    return value + " -J$(OBJDIR) -I$(OBJDIR)"
+    return value + " -J$(OBJDIR) -I$(OBJDIR) $(LIBINC)"
 
 
 #: Whether the rules READ the target's `hardware.architecture`: they do not (it is accepted by

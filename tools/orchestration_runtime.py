@@ -654,8 +654,13 @@ def _resolve_dep_version(
 # publishes `__init` (`spec_input_gates.problem_dep_on_non_problem_violation`,
 # `problem_member_violation`).
 _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
+# The deps.yaml keys that name no closure node (issue #644, Part 3 P1): `libraries` lists the
+# external libraries the node's sources reach (`spec/libraries/<id>.yaml`). `_parse_dep_entries`
+# admits the key and skips it, so no closure code sees a library; `_parse_library_entries`
+# reads it.
+_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset({"libraries"})
 _DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"components", "problems", "profiles", "infrastructure"})
+    {"components", "problems", "profiles", "infrastructure"}) | _DEPS_NON_NODE_KEYS
 # (deps key, per-item id field). `kind = key.rstrip("s")` yields
 # component/problem/profile/infrastructure.
 # A `profile` entry is expanded into the components it selects by
@@ -669,12 +674,15 @@ _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
     ("infrastructure", "infrastructure_id"),
 )
 # The parse loop of `_parse_dep_entries` iterates `_DEPS_KEY_KIND_FIELDS` alone, so a key in
-# `_DEPS_YAML_ALLOWED_KEYS` that the pair table does not name would parse as well-formed with
-# its entries DROPPED. The two tables therefore name the same keys, checked at import.
-if {key for key, _field in _DEPS_KEY_KIND_FIELDS} != _DEPS_YAML_ALLOWED_KEYS:
+# `_DEPS_YAML_ALLOWED_KEYS` that neither the pair table nor `_DEPS_NON_NODE_KEYS` names would
+# parse as well-formed with its entries DROPPED. The allowed set is therefore exactly the two,
+# disjoint, checked at import.
+_PAIRED_DEPS_KEYS = frozenset(key for key, _field in _DEPS_KEY_KIND_FIELDS)
+if (_PAIRED_DEPS_KEYS | _DEPS_NON_NODE_KEYS != _DEPS_YAML_ALLOWED_KEYS
+        or _PAIRED_DEPS_KEYS & _DEPS_NON_NODE_KEYS):
     raise AssertionError(
-        "_DEPS_KEY_KIND_FIELDS and _DEPS_YAML_ALLOWED_KEYS must name the same deps.yaml keys: "
-        "a key allowed but not paired is parsed with its entries dropped")
+        "_DEPS_YAML_ALLOWED_KEYS must be the disjoint union of _DEPS_KEY_KIND_FIELDS' keys and "
+        "_DEPS_NON_NODE_KEYS: a key allowed but parsed by neither has its entries dropped")
 
 # Codex round 15 F2: identifiers from deps.yaml / spec_catalog.yaml are
 # interpolated into workspace/<kind>/<safe>/ paths. ANY of `spec_kind`,
@@ -771,6 +779,28 @@ def _parse_dep_entries(
             c = constraint.strip() if isinstance(constraint, str) and constraint.strip() else None
             entries.append((kind, sid_token, c))
     return entries, well_formed
+
+
+def _parse_library_entries(deps_doc: dict[str, Any]) -> tuple[list[str], bool]:
+    """The external libraries a deps.yaml declares under `dependencies.libraries` (issue #644,
+    Part 3 P1), as `(library_ids, well_formed)` in declared order. Absent key: `([], True)`.
+    Each entry is `{library_id: <token>}`; anything else, or an id declared twice, is malformed.
+    Whether the id names a declaration under `spec/libraries/` is the spec-input gate's
+    question (`external_library.declaration_violation`)."""
+    deps = deps_doc.get("dependencies") if isinstance(deps_doc, dict) else None
+    if not isinstance(deps, dict):
+        return [], False
+    items = deps.get("libraries", [])
+    if not isinstance(items, list):
+        return [], False
+    ids: list[str] = []
+    for item in items:
+        sid = item.get("library_id") if isinstance(item, dict) else None
+        if (not isinstance(item, dict) or set(item) != {"library_id"}
+                or not _is_safe_path_token(sid) or sid in ids):
+            return [], False
+        ids.append(sid)
+    return ids, True
 
 
 # The named `{reason}` values `expand_profile_dependencies` can return. Every one of them means

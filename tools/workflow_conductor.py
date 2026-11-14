@@ -6159,6 +6159,41 @@ class Conductor:
                 f"multi-version/diamond closures (deterministic_followups.md L6).")
         return closure
 
+    def _closure_libraries(self, refs: NodeRefs) -> list[Any]:
+        """The external libraries a build of this node links, located at the site the target
+        runs at (issue #644, Part 3 P1): the node's own `deps.yaml` declarations, then its
+        pipeline closure's (`_dependency_closure_nodes`, the harness included), each once
+        (`external_library.closure_declarations` / `resolve_closure`). `[]` when none declares
+        one. A library the site cannot serve raises `LibraryUnusable` (a RuntimeError: the
+        driver decides it before any phase, so meeting it here is a host defect, transport
+        fail_closed)."""
+        from tools import external_library as xl
+        try:
+            declarations = xl.closure_declarations(
+                self.repo_root, refs.spec_path, self._dependency_closure_nodes(refs))
+        except xl.LibraryDeclarationError as exc:
+            raise RuntimeError(f"libraries of {refs.node_key}: {exc}") from exc
+        return xl.resolve_closure(self.repo_root, self.target, declarations)
+
+    def _library_build_args(self, libraries: Sequence[Any], execute: Any) -> list[str]:
+        """The build system's command-line variables that carry `libraries` (issue #644): the
+        include flags and link words the target compiler's `library_flags` gives, empty when
+        the closure declares none. Passed on EVERY build, before the build-override tuple."""
+        from tools import external_library as xl
+        from tools.checked_build import target_compiler
+        return list(execute.library_overrides(
+            *xl.make_values(target_compiler(self.target), libraries)))
+
+    def _library_loader_env(self, libraries: Sequence[Any],
+                            inherited_env: Mapping[str, str] | None) -> dict[str, str]:
+        """The loader-path overlay a run of a binary linking `libraries` takes (issue #644):
+        `{}` for none, else the target compiler's `library_binary.loader_env` — the library
+        directories prefixed to the loader variable's value in `inherited_env` (the environment
+        the run would otherwise see: this process's for a host run, the wrapper's base
+        environment for a workshop run)."""
+        from tools import external_library as xl
+        return xl.loader_env(self.target, libraries, inherited_env)
+
     def _pipeline_dependency_block(self, refs: NodeRefs, block: Any) -> dict[str, Any]:
         """A dependency block (the IR's `dependency`, or the closure sidecar) as this node's
         pipeline sees it for the run's target: the target's harness added as a direct
@@ -11135,6 +11170,13 @@ class Conductor:
         wrapper = syntax_compiler_wrapper(tc["backend"], syntax_compiler)
         execute = self._require_build_execute(tc["build_system"], "workshop wrapper")
         exe = self._resolve_exe_name(refs)
+        # The closure's external libraries (issue #644): the same command-line variables, the
+        # include directories, the loader-path overlay and the directories the sandbox binds
+        # as the host's own Build, syntax gate and runs use.
+        from tools import external_library as xl
+        libraries = self._closure_libraries(refs)
+        library_env = tuple(sorted(self._library_loader_env(
+            libraries, wrapper_base_env(self.env)).items()))
         run_unavailable: str | None = None
         launch_prefix: tuple[str, ...] | None = None
         launch_env: tuple[tuple[str, str], ...] = ()
@@ -11175,13 +11217,15 @@ class Conductor:
             seed_names=tuple(seed_names),
             language=language,
             build_system=tc["build_system"],
-            build_overrides=tuple(execute.build_overrides(
-                str(paths.staged_obj), str(paths.staged_bin), exe)),
+            build_overrides=(*self._library_build_args(libraries, execute),
+                             *execute.build_overrides(
+                                 str(paths.staged_obj), str(paths.staged_bin), exe)),
             lint_preset=lint_preset,
             syntax_compiler=syntax_compiler,
             syntax_std=tc["standard"],
             syntax_architecture=self._target_architecture(),
             syntax_parallel_backend=tc["backend"],
+            syntax_include_dirs=xl.include_dirs(libraries),
             syntax_staged_suffixes=tuple(s.lower() for s in syntax_facts.STAGED_SUFFIXES),
             model_basename=self._model_basename(refs),
             interface_header_basename=(
@@ -11189,10 +11233,12 @@ class Conductor:
                 if (header := self._interface_header_module(refs)) is not None else None),
             launch_argv_prefix=launch_prefix,
             launch_env=launch_env,
+            library_env=library_env,
             run_unavailable=run_unavailable,
             run_raw_dirs=self._run_raw_dirs(refs),
             base_env=tuple(sorted(wrapper_base_env(self.env).items())),
-            toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables, self.repo_root)),
+            toolchain_ro_roots=(*wrapper_toolchain_ro_roots(executables, self.repo_root),
+                                *xl.bind_roots(libraries)),
             max_wrapper_calls=max_wrapper_calls,
             lineage_deadline=lineage_deadline,
             seed_texts=tuple(sorted((seed_texts or {}).items())),
@@ -11330,6 +11376,7 @@ class Conductor:
         # the copy is re-hashed against them; a failing build records them too: the binding
         # describes what was linked, not whether linking succeeded.
         closure_bindings = self._stage_dependency_sources(refs, obj_dir, phase="build")
+        libraries = self._closure_libraries(refs)
         if checked_flags:
             # The same bound sources, staged again: make compiles the closure FROM the object
             # directory it is handed, and the checked build has its own.
@@ -11346,18 +11393,23 @@ class Conductor:
         )
         toolchain_identity = _target_toolchain_identity(self.target)
 
+        # The closure's external libraries (issue #644): their command-line variables lead
+        # every build's overrides, empty when none is declared.
+        library_args = self._library_build_args(libraries, execute)
+
         def build_args(obj_path: str, bin_path: str) -> list[str]:
             """The build system's command-line overrides (`execute.build_overrides`), from one
             set of paths — the local ones or the job directory's — so the two sites cannot
-            build differently; see phase_03_build.md."""
-            return list(execute.build_overrides(obj_path, bin_path, exe))
+            build differently; see phase_03_build.md. The library variables come first."""
+            return [*library_args, *execute.build_overrides(obj_path, bin_path, exe)]
 
         def checked_args(obj_path: str, bin_path: str) -> list[str]:
             """The checked build's overrides (`execute.checked_build_overrides`): the same, over
             its own directories, plus the control file's flag string verbatim followed by the
-            compiler's checked flags."""
-            return list(execute.checked_build_overrides(obj_path, bin_path, exe, flag_rules,
-                                                        checked_flags))
+            compiler's checked flags. The library variables come first, so the tail the
+            post-execute gate compares holds none of them."""
+            return [*library_args, *execute.checked_build_overrides(
+                obj_path, bin_path, exe, flag_rules, checked_flags)]
 
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
         checked_result: dict[str, Any] | None = None
@@ -12184,6 +12236,10 @@ class Conductor:
             staged_deps = self._stage_dependency_sources(refs, deps_dir, phase="generate")
             self._refuse_unstaged_closure(refs, staged_deps, "generate.gate syntax check")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
+            # The module directories of the closure's external libraries (issue #644), at the
+            # site's directories: every stage's search path carries them.
+            from tools.external_library import include_dirs as library_include_dirs
+            syntax_include_dirs = list(library_include_dirs(self._closure_libraries(refs)))
 
             raw = self.env.get("SPEC2SCIENCE_SYNTAX_COMPILERS", mandatory)
             compilers = [c.strip().lower() for c in raw.split(",") if c.strip()]
@@ -12251,6 +12307,7 @@ class Conductor:
                         "std": tc["standard"],
                         "architecture": architecture,
                         "parallel_backend": tc["backend"],
+                        "include_dirs": syntax_include_dirs,
                         "project_dir": str(sub_dir),
                         "command_log_path": command_log_path,
                         "capture_limit": _FULL_CAPTURE_LIMIT,
@@ -12264,6 +12321,7 @@ class Conductor:
                         "std": tc["standard"],
                         "architecture": architecture,
                         "parallel_backend": tc["backend"],
+                        "include_dirs": syntax_include_dirs,
                         "project_dir": str(stage_dir),
                         "command_log_path": str(src_dir / "command_log.jsonl"),
                         "capture_limit": _FULL_CAPTURE_LIMIT,
@@ -13319,7 +13377,16 @@ class Conductor:
         # the target's compiler declares no checked flags.
         checked = checked_shape(target)
         checked_binary = (bin_dir.parent / "bin_checked" / exe).resolve()
-        checked_env = serial_execution_env(target.parallel_backend, target.block_size)
+        # The loader-path overlay of the closure's external libraries (issue #644): the library
+        # directories prefixed to the value this process would hand the run, laid over every
+        # run's environment below (the trace summary's excepted: it runs no binary of ours).
+        # Recorded as the directories alone (`environment.library_dirs`), never the joined
+        # value, so the host's own loader path stays out of the record.
+        from tools import external_library as xl
+        libraries = self._closure_libraries(refs)
+        lib_env = self._library_loader_env(libraries, os.environ)
+        checked_env = {**serial_execution_env(target.parallel_backend, target.block_size),
+                       **lib_env}
         ir_spec = (self.repo_root / refs.ir_ref / "spec.ir.yaml").resolve()
         run_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "run"
         qc_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "qc_run"
@@ -13465,7 +13532,8 @@ class Conductor:
             run_argv = launch.command(argv)
             qc_env = {**serial_execution_env(target.parallel_backend, target.block_size),
                       **execute.quality_check_env(obj_path, bin_path, qc_path, str(exe),
-                                                  spec_path, base_ids)}
+                                                  spec_path, base_ids),
+                      **lib_env}
             return (run_argv, qc_env, [shape_launch.command(argv) for _s, shape_launch in sweep],
                     [checked_path, "--cases", spec_path, *base_ids])
 
@@ -13479,16 +13547,18 @@ class Conductor:
             check's build-system re-run with that one case and its run directory there."""
             out: dict[str, tuple[list[str], dict[str, str]]] = {}
             spec = f"{shape_path('run')}/spec.ir.yaml"
-            out["run"] = (launch.command([binary_path, "--cases", spec, cid]), dict(launch.env))
+            out["run"] = (launch.command([binary_path, "--cases", spec, cid]),
+                          {**launch.env, **lib_env})
             qc_dir = shape_path("qc_run")
             out["qc_run"] = ([], {
                 **serial_execution_env(target.parallel_backend, target.block_size),
                 **execute.quality_check_env(obj_path, bin_path, qc_dir, str(exe),
-                                            f"{qc_dir}/spec.ir.yaml", [cid])})
+                                            f"{qc_dir}/spec.ir.yaml", [cid]),
+                **lib_env})
             for shape, shape_launch in sweep:
                 spec = f"{shape_path(shape.label)}/spec.ir.yaml"
                 out[shape.label] = (shape_launch.command([binary_path, "--cases", spec, cid]),
-                                    dict(shape_launch.env))
+                                    {**shape_launch.env, **lib_env})
             if checked is not None:
                 spec = f"{shape_path(checked.label)}/spec.ir.yaml"
                 out[checked.label] = ([checked_path, "--cases", spec, cid], dict(checked_env))
@@ -13552,7 +13622,7 @@ class Conductor:
             res_run = tool_run_program({
                 "project_dir": str(run_tmp),
                 "command": run_argv,
-                "env": dict(launch.env),
+                "env": {**launch.env, **lib_env},
                 "command_log_path": str(cmd_log),
                 "capture_limit": _FULL_CAPTURE_LIMIT,
                 **attribution,
@@ -13593,7 +13663,7 @@ class Conductor:
                 res_sweep.append(tool_run_program({
                     "project_dir": str(shape_dir),
                     "command": argv,
-                    "env": dict(shape_launch.env),
+                    "env": {**shape_launch.env, **lib_env},
                     "command_log_path": str(cmd_log),
                     "capture_limit": _FULL_CAPTURE_LIMIT,
                     **attribution,
@@ -14068,6 +14138,9 @@ class Conductor:
                 # The serial reference's launch environment (the quality check's re-run).
                 "serial_reference_env": dict(sorted(serial_execution_env(
                     target.parallel_backend, target.block_size).items())),
+                # The external libraries' directories every run above was given ahead of its
+                # inherited loader path (issue #644); empty when the closure declares none.
+                "library_dirs": list(xl.library_dirs(libraries)),
                 # The host this evidence was produced on (issue #250): RECORDED, not keyed —
                 # no verdict predicate depends on the machine yet, and the day a perf or
                 # cross-target predicate does, the execute inputs gain one line and read this.

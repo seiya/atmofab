@@ -59,6 +59,17 @@ def build_overrides(obj_dir: str, bin_dir: str, exe: str) -> tuple[str, ...]:
     return (f"OBJDIR={obj_dir}", f"BINDIR={bin_dir}", f"BIN={exe}")
 
 
+def library_overrides(include_value: str, link_value: str) -> tuple[str, ...]:
+    """The command-line variables that carry the closure's external libraries (issue #644):
+    the include flags and the link words (`control_file.LIBRARY_INCLUDE_VARIABLE`,
+    `LIBRARY_LINK_VARIABLE`), passed on every build, empty when the closure declares none. They
+    go BEFORE `build_overrides` / `checked_build_overrides`, whose tuple the post-execute
+    checked-build gate compares with the recorded argv's tail."""
+    from tools.backends.build_system.make.control_file import (
+        LIBRARY_INCLUDE_VARIABLE, LIBRARY_LINK_VARIABLE)
+    return (f"{LIBRARY_INCLUDE_VARIABLE}={include_value}", f"{LIBRARY_LINK_VARIABLE}={link_value}")
+
+
 def checked_build_overrides(obj_dir: str, bin_dir: str, exe: str, rules: Mapping[str, Any],
                             flags_suffix: Iterable[str]) -> tuple[str, ...]:
     """The command-line variables of the bounds-checked second build (issue #589 PR-0):

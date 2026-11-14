@@ -725,7 +725,14 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
     # The launcher is refused above, so the launch prefix holds at most a device trace's
     # profiling half, which a person's run does not take.
     cmd = [str(sel.binary), "--cases", str(out / "spec.ir.yaml"), base]
-    env = {**os.environ, **launch.env}
+    # The closure's external libraries (issue #644): their directories ahead of the inherited
+    # loader path, as the certifying run had them; recorded as the directories alone.
+    from tools import external_library as xl
+    try:
+        libraries = xl.node_libraries(repo_root, spec_ref, sel.ir_ref, sel.node_key, sel.profile)
+    except (xl.LibraryUnusable, xl.LibraryDeclarationError) as exc:
+        raise ConfigurationRefused(f"{sel.node_key}: {exc}") from None
+    env = {**os.environ, **launch.env, **xl.loader_env(sel.profile, libraries, os.environ)}
     record: dict[str, Any] = {
         "statement": NOT_A_CERTIFICATION,
         "node_key": sel.node_key, "target_id": sel.profile.target_id,
@@ -735,6 +742,7 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         "configuration": {"base_case": base, "inputs": overrides, "file": str(Path(config).resolve()),
                           "text": config_text},
         "restart": restart, "command": cmd, "launch_env": dict(sorted(launch.env.items())),
+        "library_dirs": list(xl.library_dirs(libraries)),
         "cwd": str(out), "timeout_sec": timeout_sec, "started_at": _now(),
         "status": "running", "exit_status": None, "timed_out": False, "start_check": None,
         "final_step": None, "kernel": None, "binary_pgid": None,

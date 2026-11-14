@@ -155,6 +155,8 @@ class WrapperContext:
     syntax_std: str = ""
     syntax_architecture: str | None = None
     syntax_parallel_backend: str | None = None
+    #: The module directories of the closure's external libraries (issue #644).
+    syntax_include_dirs: tuple[str, ...] = ()
     syntax_staged_suffixes: tuple[str, ...] = ()
     #: The node's model file and its host-rendered interface header (None for a language
     #: with none): what the model-alone probe stages.
@@ -163,6 +165,9 @@ class WrapperContext:
     #: The local launch shape (`host_execution.launch_shape`), or None with `run_unavailable`.
     launch_argv_prefix: tuple[str, ...] | None = None
     launch_env: tuple[tuple[str, str], ...] = ()
+    #: The loader-path overlay of a binary linking the closure's external libraries (issue
+    #: #644): the library directories alone, since `base_env` never holds the loader variable.
+    library_env: tuple[tuple[str, str], ...] = ()
     run_unavailable: str | None = None
     #: The directories `Validate.execute` creates under the run's working directory before it
     #: runs the binary (`Conductor._run_raw_dirs`), each as its path parts.
@@ -485,6 +490,7 @@ def _syntax_run(ctx: WrapperContext, stage_dir: Path, on_spawn: Any) -> dict[str
         "std": ctx.syntax_std,
         "architecture": ctx.syntax_architecture,
         "parallel_backend": ctx.syntax_parallel_backend,
+        "include_dirs": list(ctx.syntax_include_dirs),
         "project_dir": str(stage_dir),
         "env": env,
         "command_log_path": str(ctx.paths.command_log),
@@ -693,7 +699,7 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                        findings=f"the IR declares no case {unknown_cases}, so the host wrote no "
                                 f"case file for it; name cases of {SEEDED_IR_NAME}")
-    env = dict(ctx.base_env) | dict(ctx.launch_env)
+    env = dict(ctx.base_env) | dict(ctx.launch_env) | dict(ctx.library_env)
     command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(seeded_path), *case_ids]
     result = tool_run_program({
         "command": command,
@@ -704,7 +710,7 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         "timeout_sec": _bounded_timeout(ctx, ctx.run_timeout_sec),
         "sandbox_argv_prefix": _sandbox(
             ctx, project_dir=ctx.paths.tree, rw=[ctx.paths.tree], ro=[ctx.paths.staged_bin],
-            env=env, declared=tuple(k for k, _ in ctx.launch_env)),
+            env=env, declared=tuple(k for k, _ in (*ctx.launch_env, *ctx.library_env))),
         "on_spawn": on_spawn,
         **_attribution(ctx),
     })
