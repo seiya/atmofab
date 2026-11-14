@@ -353,7 +353,59 @@ class ResolveTests(_Fixture):
                     self.assertEqual(before, xl.identity(self.resolved()))
         decls = [xl.load_declaration(self.repo, i) for i in ("vend", "foo")]
         self.assertEqual(xl.declared_identity(decls), [
-            {k: v for k, v in entry.items() if k != "files"} for entry in before])
+            {k: v for k, v in entry.items() if k not in ("files", "directories")}
+            for entry in before])
+
+    def test_the_identity_moves_with_the_directories(self) -> None:
+        """The binary records the directories it is run with, so the same bytes in another
+        directory are another build (round 1, axis A F3)."""
+        before = xl.identity(self.resolved(("foo",)))
+        with tempfile.TemporaryDirectory() as td:
+            lib = Path(td) / "lib"
+            shutil.copytree(self.dirs["lib"], lib, symlinks=True)
+            write_sites(self.repo, self.dirs, libraries=f"      foo: {{lib: {lib}}}\n")
+            after = xl.identity(self.resolved(("foo",)))
+        self.assertEqual(before[0]["files"], after[0]["files"])
+        self.assertNotEqual(before, after)
+        self.assertEqual(after[0]["directories"], {"include": None, "lib": [str(lib)]})
+
+    def test_link_names_found_in_several_directories_load_from_each(self) -> None:
+        """Without `lib:`, the compiler's search may find two link names in two directories;
+        the run's loader path holds both (round 1, axis A F4)."""
+        with tempfile.TemporaryDirectory() as td:
+            d1, d2 = Path(td) / "d1", Path(td) / "d2"
+            for d, stem in ((d1, "foo"), (d2, "bar")):
+                d.mkdir()
+                for name in (f"lib{stem}.so", f"lib{stem}.so.1"):
+                    shutil.copy2(self.dirs["lib"] / f"lib{stem}.so.1", d / name)
+            decl = self.repo / xl.LIBRARIES_DIR / "pair.yaml"
+            decl.write_text("library_version: 1\nlibrary_id: pair\nlanguage: fortran\n"
+                            "modules: []\nprocedures: [foo_add]\nlink: [foo, bar]\n")
+            try:
+                write_sites(self.repo, self.dirs, libraries="      pair:\n")
+                with mock.patch.dict(os.environ, {"LIBRARY_PATH": f"{d1}:{d2}"}):
+                    resolved = self.resolved(("pair",))
+            finally:
+                decl.unlink()
+            self.assertEqual(xl.library_dirs(resolved), (str(d1), str(d2)))
+
+    def test_every_hop_of_a_symbolic_link_chain_is_bound(self) -> None:
+        """`A/libq.so -> B/libq.so -> C/libq.so.1`: the sandbox needs B too (round 1, axis B
+        F4)."""
+        with tempfile.TemporaryDirectory() as td:
+            a, b, c = (Path(td) / n for n in "ABC")
+            for d in (a, b, c):
+                d.mkdir()
+            shutil.copy2(self.dirs["lib"] / "libbar.so.1", c / "libq.so.1")
+            os.symlink(c / "libq.so.1", b / "libq.so")
+            os.symlink(b / "libq.so", a / "libq.so")
+            os.symlink(c / "libq.so.1", a / "libq.so.1")
+            decl = xl.LibraryDeclaration("q", "fortran", (), (), ("q",), "0" * 64)
+            r = xl.ResolvedLibrary(decl, None, str(a), (("q", str(a / "libq.so")),),
+                                   (("libq.so.1", str(a / "libq.so.1")),), ())
+            roots = xl.bind_roots([r])
+        for d in (a, b, c):
+            self.assertIn(str(d), roots)
 
     def test_unavailable_and_refused_closures(self) -> None:
         decls = [xl.load_declaration(self.repo, "foo")]

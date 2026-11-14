@@ -1620,12 +1620,12 @@ class DerivationResolver:
                         # The libraries' files, off the same stamp (issue #644). A diagnosis
                         # only (the selection is `_comparand_substituted_inputs`, pinned); no
                         # row drives this branch, so it is not pinned.
-                        files = _stamped_library_files(recorded, inputs["libraries"])
-                        if files is None:
+                        stamped_libraries = _stamped_library_files(
+                            recorded, inputs["libraries"])
+                        if stamped_libraries is None:
                             missing.append("libraries")
                         else:
-                            against["libraries"] = [{**entry, "files": f} for entry, f
-                                                    in zip(inputs["libraries"], files)]
+                            against["libraries"] = stamped_libraries
                 diff = missing + differing_inputs(recorded, against)
             rank = (stale_tuple, len(diff) if diff is not None else sys.maxsize)
             if closest is None or rank < closest[0] or (rank == closest[0]
@@ -2567,29 +2567,28 @@ def _comparand_substituted_inputs(doc: Mapping[str, Any], inputs: Mapping[str, A
     out = {**inputs, "toolchain": {**inputs["toolchain"],
                                    **{leaf: stamped[leaf] for leaf in leaves}}}
     if "libraries" in inputs:
-        files = _stamped_library_files(recorded, inputs["libraries"])
-        if files is None:
+        stamped_libraries = _stamped_library_files(recorded, inputs["libraries"])
+        if stamped_libraries is None:
             return None
-        out["libraries"] = [{**entry, "files": f} for entry, f in zip(inputs["libraries"], files)]
+        out["libraries"] = stamped_libraries
     return out
 
 
 def _stamped_library_files(recorded: Any, computed: Sequence[Mapping[str, Any]]
                            ) -> list[Any] | None:
-    """The `files` of each library a stamp's `derivation_inputs.libraries` records, for a key
-    computed without probing (issue #644): only when the stamp names the same libraries with
-    the same declarations, in the same order; None otherwise, and when it records none."""
+    """The libraries a stamp's `derivation_inputs.libraries` records — each with the site's
+    directories and files a key computed without probing lacks (issue #644) — when the stamp
+    names the same libraries with the same declarations, in the same order; None otherwise,
+    and when it records none."""
     stamped = recorded.get("libraries") if isinstance(recorded, Mapping) else None
     if not isinstance(stamped, list) or len(stamped) != len(computed):
         return None
-    files: list[Any] = []
     for entry, mine in zip(stamped, computed):
         if not (isinstance(entry, Mapping) and "files" in entry
                 and entry.get("library_id") == mine.get("library_id")
                 and entry.get("declaration_sha256") == mine.get("declaration_sha256")):
             return None
-        files.append(entry["files"])
-    return files
+    return [dict(entry) for entry in stamped]
 
 
 def _own_library_declarations(repo_root: Path, node_key: str,

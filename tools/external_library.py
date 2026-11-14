@@ -364,10 +364,14 @@ def declared_identity(declarations: Sequence[LibraryDeclaration]) -> list[dict[s
 
 def identity(resolved: Sequence[ResolvedLibrary]) -> list[dict[str, Any]]:
     """The build key's `libraries` member: per library, in closure order, the id, the
-    declaration's hash and the content hash of every declared file at the site."""
+    declaration's hash, the directories (the binary records the library directories it is run
+    with, so a library moved to another directory with the same bytes is another build), and
+    the content hash of every declared file at the site."""
     return [
         {"library_id": r.declaration.library_id,
          "declaration_sha256": r.declaration.sha256,
+         "directories": {"include": r.include_dir,
+                         "lib": list(dict.fromkeys(_own_lib_dirs(r)))},
          "files": {
              "link": {name: _file_sha256(path) for name, path in r.link_files},
              "soname": {name: _file_sha256(path) for name, path in r.soname_files},
@@ -381,10 +385,16 @@ def include_dirs(resolved: Sequence[ResolvedLibrary]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(r.include_dir for r in resolved if r.include_dir))
 
 
+def _own_lib_dirs(r: ResolvedLibrary) -> list[str]:
+    """One library's directories: the site's `lib`, then the directory of each link file (which
+    differ only when the compiler's own search found the link names in several)."""
+    return [r.lib_dir, *(os.path.normpath(os.path.dirname(path)) for _n, path in r.link_files)]
+
+
 def library_dirs(resolved: Sequence[ResolvedLibrary]) -> tuple[str, ...]:
     """The library directories, in closure order, each once: what the run's loader path is
     prefixed with, and what the linker searches for a library's own dependencies."""
-    return tuple(dict.fromkeys(r.lib_dir for r in resolved))
+    return tuple(dict.fromkeys(d for r in resolved for d in _own_lib_dirs(r)))
 
 
 def make_values(compiler: str, resolved: Sequence[ResolvedLibrary]) -> tuple[str, str]:
@@ -400,12 +410,22 @@ def make_values(compiler: str, resolved: Sequence[ResolvedLibrary]) -> tuple[str
 
 def bind_roots(resolved: Sequence[ResolvedLibrary]) -> tuple[str, ...]:
     """The directories a sandbox binds read-only for a build and run of these libraries: each
-    include and library directory, its real path when that differs, and the directory each
-    declared file really lives in (a link name may be a symbolic link into another prefix)."""
-    real_file_dirs = [os.path.dirname(os.path.realpath(path)) for r in resolved
-                      for _name, path in (*r.link_files, *r.soname_files, *r.module_files)]
+    include and library directory, its real path when that differs, and the directory of every
+    hop of each declared file's symbolic-link chain (a link name may lead through other
+    prefixes before it reaches the file, and every hop must resolve inside the sandbox)."""
+    hop_dirs: list[str] = []
+    for r in resolved:
+        for _name, path in (*r.link_files, *r.soname_files, *r.module_files):
+            current, seen = os.path.abspath(path), set()
+            while current not in seen:
+                seen.add(current)
+                hop_dirs.append(os.path.dirname(current))
+                if not os.path.islink(current):
+                    break
+                current = os.path.normpath(os.path.join(os.path.dirname(current),
+                                                        os.readlink(current)))
     roots: list[str] = []
-    for d in (*include_dirs(resolved), *library_dirs(resolved), *real_file_dirs):
+    for d in (*include_dirs(resolved), *library_dirs(resolved), *hop_dirs):
         for form in (d, os.path.realpath(d)):
             if form not in roots:
                 roots.append(form)
