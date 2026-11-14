@@ -721,6 +721,46 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         kwargs.update(over)
         return self.c._freeze_wrapper_context(self.refs, self.paths, **kwargs)
 
+    def test_the_closure_s_libraries_reach_every_operation(self) -> None:
+        """Issue #644: the frozen context carries the library variables ahead of the build
+        overrides, the include directories for the syntax stage, the loader overlay for a run
+        (the directories alone: the base environment holds no loader variable) and the
+        directories the sandbox binds; `run_env` hands the overlay to a run and declares it."""
+        from unittest import mock
+
+        from tools import external_library as xl
+        from tools import workshop_wrapper as ww
+        from tools.tests.test_external_library import build_fixture_libraries, write_sites
+        from tools.tests.test_external_library import write_declarations
+        dirs = build_fixture_libraries(Path(self._tmp.name) / "libs")
+        write_declarations(self.repo)
+        write_sites(self.repo, dirs)
+        resolved = xl.resolve_closure(self.repo, self.c.target, [
+            xl.load_declaration(self.repo, i) for i in ("vend", "foo")])
+        with mock.patch.object(type(self.c), "_closure_libraries",
+                               lambda self_, refs_: resolved):
+            ctx = self._freeze()
+        inc_value, link_value = xl.make_values("gfortran", resolved)
+        self.assertEqual(list(ctx.build_overrides[:2]),
+                         [f"LIBINC={inc_value}", f"LIBS={link_value}"])
+        self.assertEqual(ctx.build_overrides[2:], self.ctx.build_overrides[2:])
+        self.assertEqual(ctx.syntax_include_dirs, (str(dirs["include"]),))
+        self.assertEqual(dict(ctx.library_env), {"LD_LIBRARY_PATH": str(dirs["lib"])})
+        for root in xl.bind_roots(resolved):
+            self.assertIn(root, ctx.toolchain_ro_roots)
+        env, declared = ww.run_env(ctx)
+        self.assertEqual(env["LD_LIBRARY_PATH"], str(dirs["lib"]))
+        self.assertIn("LD_LIBRARY_PATH", declared)
+        # A closure that declares none: empty variables, nothing else.
+        self.assertEqual(list(self.ctx.build_overrides[:2]), ["LIBINC=", "LIBS="])
+        self.assertEqual((self.ctx.syntax_include_dirs, self.ctx.library_env), ((), ()))
+        captured: list[dict] = []
+        with mock.patch("tools.build_runtime.tool_run_syntax_check",
+                        lambda args: captured.append(args) or {"ok": True}), \
+                mock.patch.object(ww, "_sandbox", lambda *a, **k: []):
+            ww._syntax_run(ctx, Path(self._tmp.name), None)
+        self.assertEqual(captured[0]["include_dirs"], [str(dirs["include"])])
+
     def test_the_syntax_stage_is_the_gates(self) -> None:
         # Each fact against the source `_gate_syntax_check` reads it from.
         target = self.c.target

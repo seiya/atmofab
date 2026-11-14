@@ -1617,7 +1617,9 @@ class DerivationResolver:
                         **inputs["toolchain"],
                         **{leaf: stamped[leaf] for leaf in leaves if leaf in stamped}}}
                     if "libraries" in inputs:
-                        # The libraries' files, off the same stamp (issue #644).
+                        # The libraries' files, off the same stamp (issue #644). A diagnosis
+                        # only (the selection is `_comparand_substituted_inputs`, pinned); no
+                        # row drives this branch, so it is not pinned.
                         files = _stamped_library_files(recorded, inputs["libraries"])
                         if files is None:
                             missing.append("libraries")

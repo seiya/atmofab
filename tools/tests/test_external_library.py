@@ -648,6 +648,121 @@ class BuildRoutingTests(_Fixture):
                          "generate")
 
 
+class LeafFacingTests(_Fixture):
+    """What a leaf of a declaring node is told: the `libraries` list of
+    `dependency_surface.json` and the `## External libraries` block of its `DEPENDENCIES.md`
+    seed."""
+
+    def _conductor(self, declared: tuple[str, ...]):
+        import tools.workflow_conductor as wc
+        from types import SimpleNamespace
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_workflow_conductor import _TargetedConductor
+        spec = self.repo / "spec/component/spec_x"
+        spec.mkdir(parents=True, exist_ok=True)
+        (spec / "deps.yaml").write_text(
+            "dependencies:\n  components: []\n  profiles: []\n  libraries:"
+            + ("".join(f"\n    - {{library_id: {i}}}" for i in declared) or " []") + "\n")
+        c = _TargetedConductor(repo_root=self.repo, orchestration_id="t",
+                               orchestration_agent_run_id="x",
+                               llm_config=sample_config_with("claude"), env={},
+                               target_profile=FORTRAN_CPU)
+        refs = wc.NodeRefs(target_id=FORTRAN_CPU.target_id, node_key="component/spec_x@0.1.0",
+                           spec_path="spec/component/spec_x", ir_id="x_1", pipeline_id="x_1")
+        spec_ns = SimpleNamespace(workshop_seeds_host_sources=False, workshop_seed_expanders={},
+                                  workshop_document_seeds={}, workshop_outputs=())
+        return c, refs, spec_ns
+
+    def test_the_dependency_surface_lists_the_node_s_libraries(self) -> None:
+        import tools.orchestration_runtime as ort
+        for declared in (("vend", "foo"), ()):
+            with self.subTest(declared=declared):
+                c, refs, _spec = self._conductor(declared)
+                (self.repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+                (self.repo / refs.ir_ref / "dependency_graph.json").write_text("{}")
+                with mock.patch.object(ort, "_resolve_component_dep_surface", return_value=[]):
+                    c._write_dependency_surface(refs)
+                doc = json.loads((self.repo / refs.ir_ref / "dependency_surface.json").read_text())
+                if declared:
+                    self.assertEqual(doc["libraries"], [
+                        {"library_id": "vend", "modules": ["vend"], "procedures": []},
+                        {"library_id": "foo", "modules": [], "procedures": ["foo_add"]}])
+                else:
+                    self.assertNotIn("libraries", doc)
+
+    def test_the_dependencies_seed_carries_the_block(self) -> None:
+        c, refs, spec = self._conductor(("vend", "foo"))
+        with mock.patch.object(type(c), "_workshop_spec_reads", lambda self_, s: False):
+            seeds = c._workshop_seeds(refs, {}, {"step": "validate", "substep": "judge"}, spec)
+        text = seeds["DEPENDENCIES.md"]
+        self.assertTrue(text.startswith("## External libraries"), text)
+        self.assertIn("- vend: modules [vend]; procedures []", text)
+        self.assertIn("- foo: modules []; procedures [foo_add]", text)
+        c, refs, spec = self._conductor(())
+        with mock.patch.object(type(c), "_workshop_spec_reads", lambda self_, s: False):
+            self.assertNotIn("DEPENDENCIES.md", c._workshop_seeds(
+                refs, {}, {"step": "validate", "substep": "judge"}, spec))
+
+
+class ExecuteLoaderPathTests(unittest.TestCase):
+    """`Validate.execute` gives every run of the binary — the run, the quality check, each sweep
+    shape and the checked row — the Build's recorded library directories ahead of the inherited
+    loader path, and records the directories."""
+
+    def test_every_run_is_given_the_build_s_library_directories(self) -> None:
+        import tools.workflow_conductor as wc
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_workflow_conductor import (
+            _CLEAN_C_ALPHA_IR, _build_runtime, _record_build_site, _TargetedConductor,
+            _write_c_alpha_captures)
+        build_runtime = _build_runtime()
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                                   orchestration_agent_run_id="x",
+                                   llm_config=sample_config_with("claude"), env={},
+                                   target_profile=FORTRAN_CPU)
+            refs = wc.NodeRefs(target_id=FORTRAN_CPU.target_id,
+                               node_key="component/spec_x@0.1.0",
+                               spec_path="spec/component/spec_x", ir_id="x_1",
+                               pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                               run_id="run_1", source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(_CLEAN_C_ALPHA_IR)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            envs: list[dict] = []
+
+            def fake_run_program(args):
+                envs.append(dict(args["env"]))
+                _write_c_alpha_captures(Path(args["project_dir"]))
+                (Path(args["project_dir"]) / "perf.json").write_text("{}")
+                return {"ok": True, "command_id": "R"}
+
+            def fake_qc(args):
+                envs.append(dict(args["env"]))
+                Path(args["env"]["RUNDIR"]).mkdir(parents=True, exist_ok=True)
+                _write_c_alpha_captures(Path(args["env"]["RUNDIR"]))
+                return {"ok": True, "command_id": "Q"}
+
+            _record_build_site(repo, refs)
+            meta = repo / refs.binary_dir("bin_1") / "binary_meta.json"
+            meta.write_text(json.dumps({**json.loads(meta.read_text()),
+                                        "library_dirs": ["/opt/zz/lib"]}))
+            with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
+                    mock.patch.object(build_runtime, "tool_run_quality_checks", fake_qc), \
+                    mock.patch.dict(os.environ, {"LD_LIBRARY_PATH": "/inherited"}), \
+                    mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, "", "")):
+                self.assertEqual(c._execute_inproc(refs, "child-1")["returncode"], 0)
+            trial = json.loads((repo / refs.run_node_dir() / "trial_meta.json").read_text())
+        # run, quality check, two sweep shapes, the checked row.
+        self.assertEqual(len(envs), 5)
+        for env in envs:
+            self.assertEqual(env.get("LD_LIBRARY_PATH"), "/opt/zz/lib:/inherited", env)
+        self.assertEqual(trial["environment"]["library_dirs"], ["/opt/zz/lib"])
+        self.assertNotIn("LD_LIBRARY_PATH", json.dumps(trial["environment"]["launch"]))
+
+
 class KeyMemberTests(_Fixture):
     """The build key's `libraries` member, its comparand form, and the validate key's copy."""
 
@@ -670,6 +785,33 @@ class KeyMemberTests(_Fixture):
             [xl.load_declaration(self.repo, i) for i in ("vend", "foo")]))
         self.assertEqual(self._member(probe=True, comparand=True), declared)
         self.assertIsNone(self._member(probe=True, declared=()))
+
+    def test_the_compile_and_generate_keys_carry_the_node_s_own_declarations(self) -> None:
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import DerivationResolver
+
+        def inputs(step: str, declared: tuple[str, ...]) -> dict:
+            self._member(probe=False, declared=declared)   # writes the deps.yaml
+            resolver = DerivationResolver(self.repo, target=FORTRAN_CPU,
+                                          spec_refs={"component/n@0.1.0": "spec/component/n"})
+            with mock.patch.object(ort, "_derived_closure_graph", return_value={}), \
+                    mock.patch.object(ort, "_closure_signature", return_value=[]), \
+                    mock.patch.object(ort, "_spec_file_hash", return_value="t"), \
+                    mock.patch.object(ort, "_component_direct_deps", return_value=[]), \
+                    mock.patch.object(ort, "_certified_output_hash", return_value="h"), \
+                    mock.patch.object(ort, "_pipeline_closure_for_key", return_value=[]), \
+                    mock.patch.object(ort, "_harness_for_key", return_value="h@1"), \
+                    mock.patch("tools.codegen_bundle.harness_capability_manifest_document_for",
+                               return_value={}):
+                return ort.phase_derivation_inputs(
+                    self.repo, node_key="component/n@0.1.0", step=step,
+                    spec_ref="spec/component/n", ir_ref="workspace/i", resolver=resolver)
+
+        want = xl.declared_identity([xl.load_declaration(self.repo, "foo")])
+        for step in ("compile", "generate"):
+            with self.subTest(step=step):
+                self.assertEqual(inputs(step, ("foo",))["libraries"], want)
+                self.assertNotIn("libraries", inputs(step, ()))
 
     def test_a_site_that_cannot_serve_it_is_unresolvable(self) -> None:
         from tools.orchestration_runtime import DerivationInputsUnresolvable

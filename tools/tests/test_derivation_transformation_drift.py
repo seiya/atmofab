@@ -909,6 +909,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `problem_dependency_surface_not_step_or_init` / `problem_dependency_init_not_published` in
     # the node-identity list, and V4c-iv (a `problem` member's `operations` equal its §5.1).
     "compile-docs-34": "19eed56f9ffc4d2b301c660ac992d1ed2915cdcad070487c7560ad32328f9369",
+    # compile-docs-35: phase_01_compile.md states the `libraries` list of `dependency_surface.json` (issue #644 P1).
+    "compile-docs-35": "76b905c10c8b8591e9c3ef0db49362527085370d17524a623c17ddcc3a33f9cd",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1293,6 +1295,8 @@ PINNED_RENDER: dict[str, str] = {
     # step count, time and series there; perf counts the steps this process ran. The control
     # file's `CASES ?=` default lists the base cases (`Conductor.read_base_case_ids`, a member).
     "render-19": "25d4f625ec8f39ab1d3df26ce44666785e6c801846c18134be12b7d1c0b9b7cb",
+    # render-20: every control file declares LIBINC/LIBS and the flag string references $(LIBINC) (issue #644 P1).
+    "render-20": "6c696db8c1a6c3d4fe02ac65dd9eccb13b9d2d03935d809039a45a6db24313f5",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:
@@ -1606,6 +1610,8 @@ PINNED_BUILD: dict[str, str] = {
     # variable are spelled `spec2science-*` / `spec2science_setup_line`; the job script and the
     # reader of its output are the same module and move together, and no build output moves.
     "build-4": "a26c5e752d6e83f924bb8401485db6dfccf2c1d83f673aa44b90f55f9da5d20e",
+    # build-5: the library variables on every build, the post-build symbol checks, the library members (issue #644 P1).
+    "build-5": "933dbc1dd33895310d447b537b27420d00fefa42652a5c944d081c6f7fe1830d",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
@@ -1956,6 +1962,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # started and merges its captures (`Conductor._merge_continuation_captures`, a member); the case
     # file of a loop node carries `restart.step`.
     "execute-18": "455401740956c07c7757572260025941d80ab30f009777f32e08a54ac14bea97",
+    # execute-19: the loader path of the Build's library directories on every run, the library members (issue #644 P1).
+    "execute-19": "0a1702e53f630c3ffc76d6021c2924847ae61f94c7a156e4fcd11f1fd53e2a19",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

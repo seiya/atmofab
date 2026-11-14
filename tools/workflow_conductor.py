@@ -6182,18 +6182,7 @@ class Conductor:
                             for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
         except xl.LibraryDeclarationError as exc:
             raise RuntimeError(f"libraries of {refs.node_key}: {exc}") from exc
-        if not declarations:
-            return ""
-        lines = ["## External libraries", "",
-                 "This node's `deps.yaml` declares the external libraries below. Its sources "
-                 "may reach these libraries only, through the modules and procedures listed. "
-                 "Build refuses an object that uses a symbol of another library on the link "
-                 "line, defines a symbol a library exports, or reaches none of a library it "
-                 "declares.", ""]
-        for d in declarations:
-            lines.append(f"- {d.library_id}: modules [{', '.join(d.modules)}]; "
-                         f"procedures [{', '.join(d.procedures)}]")
-        return "\n".join(lines)
+        return xl.facts_text(declarations)
 
     def _closure_libraries(self, refs: NodeRefs) -> list[Any]:
         """The external libraries a build of this node links, located at the site the target
@@ -13622,6 +13611,8 @@ class Conductor:
             check's build-system re-run with that one case and its run directory there."""
             out: dict[str, tuple[list[str], dict[str, str]]] = {}
             spec = f"{shape_path('run')}/spec.ir.yaml"
+            # `lib_env` on every continuation command as on the first pass's; the first
+            # pass's are pinned (test_external_library.ExecuteLoaderPathTests), these are not.
             out["run"] = (launch.command([binary_path, "--cases", spec, cid]),
                           {**launch.env, **lib_env})
             qc_dir = shape_path("qc_run")

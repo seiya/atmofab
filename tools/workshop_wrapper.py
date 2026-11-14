@@ -699,7 +699,7 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                        findings=f"the IR declares no case {unknown_cases}, so the host wrote no "
                                 f"case file for it; name cases of {SEEDED_IR_NAME}")
-    env = dict(ctx.base_env) | dict(ctx.launch_env) | dict(ctx.library_env)
+    env, declared = run_env(ctx)
     command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(seeded_path), *case_ids]
     result = tool_run_program({
         "command": command,
@@ -710,11 +710,19 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         "timeout_sec": _bounded_timeout(ctx, ctx.run_timeout_sec),
         "sandbox_argv_prefix": _sandbox(
             ctx, project_dir=ctx.paths.tree, rw=[ctx.paths.tree], ro=[ctx.paths.staged_bin],
-            env=env, declared=tuple(k for k, _ in (*ctx.launch_env, *ctx.library_env))),
+            env=env, declared=declared),
         "on_spawn": on_spawn,
         **_attribution(ctx),
     })
     return _command_feedback(result)
+
+
+def run_env(ctx: WrapperContext) -> tuple[dict[str, str], tuple[str, ...]]:
+    """The environment a `run` of the tree's binary is handed, and the names beyond the base
+    ones it declares to the sandbox: the base environment, the launch shape's, and the loader
+    overlay of the closure's external libraries (issue #644)."""
+    env = dict(ctx.base_env) | dict(ctx.launch_env) | dict(ctx.library_env)
+    return env, tuple(k for k, _ in (*ctx.launch_env, *ctx.library_env))
 
 
 def _op_check_ir(ctx: WrapperContext, args: Mapping[str, Any],

@@ -462,3 +462,21 @@ def symbol_check(target: Any, objects: Sequence[Path], resolved: Sequence[Resolv
         "violations": violations,
     }
     return record, ("\n".join(violations) or None)
+
+
+def facts_text(declarations: Sequence[LibraryDeclaration]) -> str:
+    """The `## External libraries` block of a leaf's `DEPENDENCIES.md`: each library the node's
+    own deps.yaml declares, with the modules and external procedures a source of the node may
+    reach; `""` for none. The words are a reader's input (the generate reviewer and the judge
+    read them), pinned by `tools/tests/test_leaf_prompt_contract_drift.py`."""
+    if not declarations:
+        return ""
+    lines = ["## External libraries", "",
+             "This node's `deps.yaml` declares the external libraries below. Its sources may "
+             "reach these libraries only, through the modules and procedures listed. Build "
+             "refuses an object that uses a symbol of another library on the link line, defines "
+             "a symbol a library exports, or reaches none of a library it declares.", ""]
+    for d in declarations:
+        lines.append(f"- {d.library_id}: modules [{', '.join(d.modules)}]; "
+                     f"procedures [{', '.join(d.procedures)}]")
+    return "\n".join(lines)

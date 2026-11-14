@@ -1179,6 +1179,8 @@ PINNED: dict[str, str] = {
     # shipped (review round 2: the producer template states the private-state rule, G4 exempts
     # storage kept only for reuse, the Fortran fragment's `use` and `!$` clause).
     "leaf-98": "1aaadcc256f0eef57948967780e84af0cb28debe21d6641ba099bfc993fe8de1",
+    # leaf-99: the external-library wording of the generate and compile templates and fragments (issue #644 P1).
+    "leaf-99": "8f2a31d28130a81b8717010a8c4be85dd7a2d2555d821e51efd15ee80b613b9f",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1195,6 +1197,8 @@ PINNED_READER: dict[str, str] = {
     # compile-verify-5 (the system tier's Part 1): the reviewer template's surface heading names
     # the dependencies a node calls, `component` or `problem`. Moved: that template alone.
     "compile-verify-5": "2654c5b6a2cc5023c2bc42d4ac7d2e6322628d9ce3340b0b78e29d313f732d89",
+    # compile-verify-6: compile.verify is told the dependency surface's `libraries` list (issue #644 P1).
+    "compile-verify-6": "c00dc2185d9f3563fe7759b740fd972c1487c3b15744c2a3b8833d444ccc75b6",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
@@ -1223,6 +1227,8 @@ PINNED_READER: dict[str, str] = {
     # outside the schema depends on an earlier call, an earlier case, or step 0. Re-pinned in place
     # before it shipped (review round 2: storage kept only for reuse is not such state).
     "generate-verify-9": "46680740182d49d32081253a0516da8d488f8d885199a86255c0600e68986e61",
+    # generate-verify-10: the external-library wording of the verify templates and the `## External libraries` block (issue #644 P1).
+    "generate-verify-10": "24dbfdcea35f7c56e4788bc008eab56447d82b118d4ed857d8d6581ded5eabde",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
@@ -1239,6 +1245,8 @@ PINNED_READER: dict[str, str] = {
     # validate-judge-7 (issue #632): §1+§3 of the runner-output contract state the steps a
     # process ran and the driver's restart point.
     "validate-judge-7": "d15e1b969fb6b3ddbf5062fc9938ac6ab95907b12b58a736090eb59334cf4c7b",
+    # validate-judge-8: the judge reads the `## External libraries` block of DEPENDENCIES.md (issue #644 P1).
+    "validate-judge-8": "f0f706c9670db3f63307f498bd0274c0559d8cc4f3f835449cef1f83cc5e39d7",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
@@ -1387,7 +1395,17 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         # block, resolved with no name, unresolved). Until leaf-96 no member rendered it, so its
         # words could change with no version moving.
         "dependency_surface_render": ort._build_dependency_facts(_dependency_surface_payload()),
+        # The `## External libraries` block of `DEPENDENCIES.md` (issue #644), rendered over a
+        # constant declaration: only the renderer's words can move it.
+        "external_library_facts_render": _external_library_facts_render(),
     }
+
+
+def _external_library_facts_render() -> str:
+    from tools.external_library import LibraryDeclaration, facts_text
+    return facts_text([LibraryDeclaration(
+        library_id="lib_a", language="lang", modules=("mod_a",), procedures=("proc_a",),
+        link=("a",), sha256="0" * 64)])
 
 
 def _dependency_surface_payload() -> dict[str, object]:
@@ -1453,11 +1471,13 @@ READER_MEMBERS_BY_PHASE: dict[str, frozenset[str]] = {
         "runner_output_contract_document",
         "runner_output_binding_document",
         "dependency_facts_render",
+        "external_library_facts_render",
     },
     "validate": _EVERY_READER | {
         "templates/workshop_validate_judge.txt",
         "runner_output_contract_sections",
         "dependency_facts_render",
+        "external_library_facts_render",
     },
 }
 ADVISORY_MEMBERS: frozenset[str] = frozenset({
