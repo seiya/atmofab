@@ -78,6 +78,7 @@ def libraries(library_ids: list[str]) -> list:
     """Each declared library located by the compiler's own search: what a site entry naming no
     directory resolves to."""
     from types import SimpleNamespace
+
     from tools.execution_sites import SiteLibrary
     site = SimpleNamespace(site_id="local", library=lambda _library_id: SiteLibrary())
     return [xl.resolve(xl.load_declaration(REPO, i), site, target_compiler(FORTRAN_CPU))
@@ -117,7 +118,7 @@ def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str],
         raise SystemExit("compile runner: " + r.stderr[-3000:])
     link = xl.make_values(target_compiler(FORTRAN_CPU), list(resolved))[1].split()
     r = subprocess.run(["gfortran", *FLAGS, *objs, "runner.o", *link, "-o", "bin"], cwd=work,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, check=False)
     if r.returncode:
         raise SystemExit("link: " + r.stderr[-3000:])
     # pass 1 over the base cases, then each continuation case in a process of its own
