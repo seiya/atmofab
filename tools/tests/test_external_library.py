@@ -698,6 +698,25 @@ class SymbolCheckTests(_Fixture):
             obj = self._object(work, "m_model", _MODEL_BOTH)
             self.assertIn("foo_add_", binary.imports(obj) & binary.exports(work / "libfoo.so"))
 
+    def test_a_symbol_a_declared_library_also_exports_is_not_refused(self) -> None:
+        """Two declarations sharing a lower library (Codex, round 2): a node declaring the
+        one that exports `foo_add_` may import it although an undeclared library on the link
+        line exports it too."""
+        with tempfile.TemporaryDirectory() as td:
+            obj = self._object(Path(td), "m_model", _MODEL_BOTH)
+            twin = xl.ResolvedLibrary(
+                xl.LibraryDeclaration("twin", "fortran", (), ("foo_add",), ("foo",), "0" * 64),
+                None, str(self.dirs["lib"]), self.resolved(("foo",))[0].link_files, (), ())
+            _record, violation = xl.symbol_check(
+                FORTRAN_CPU, [obj], [*self.resolved(), twin], ["vend", "foo"])
+            self.assertIsNone(violation)
+            _record, violation = xl.symbol_check(
+                FORTRAN_CPU, [obj], [*self.resolved(), twin], ["vend", "twin"])
+            self.assertIsNone(violation)
+            _record, violation = xl.symbol_check(
+                FORTRAN_CPU, [obj], [*self.resolved(), twin], ["vend"])
+            self.assertEqual(violation.count("library_symbol_not_declared"), 2)
+
     def test_a_declared_library_no_object_references_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             obj = self._object(Path(td), "plain", "subroutine plain()\nend subroutine plain\n")

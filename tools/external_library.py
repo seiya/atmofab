@@ -459,9 +459,15 @@ def symbol_check(target: Any, objects: Sequence[Path], resolved: Sequence[Resolv
         imported |= binary.imports(obj)
         defined |= binary.defines(obj)
     violations: list[str] = []
+    exported_by = {r.declaration.library_id: set().union(
+        *(binary.exports(path) for _name, path in r.link_files)) for r in resolved}
+    # A symbol a declared library exports is the node's to import, whichever other library on
+    # the link line exports it too (two declarations may share a lower library).
+    declared_exports = set().union(
+        *(e for library_id, e in exported_by.items() if library_id in declared_set))
     for r in resolved:
         library_id = r.declaration.library_id
-        exported = set().union(*(binary.exports(path) for _name, path in r.link_files))
+        exported = exported_by[library_id]
         # Interposition is refused for every library on the link line, a declared one too:
         # an object defining a declared library's symbol would satisfy the unused check below
         # with the leaf's own code in the library's place.
@@ -477,7 +483,7 @@ def symbol_check(target: Any, objects: Sequence[Path], resolved: Sequence[Resolv
                     f"the node's objects import no symbol it exports; the node's spec declares "
                     f"the library for the computation it asks of it, so reach it there")
             continue
-        hits = imported & exported
+        hits = (imported & exported) - declared_exports
         if hits:
             violations.append(
                 f"library_symbol_not_declared: the node's objects import {sorted(hits)[:10]} "
