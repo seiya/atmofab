@@ -905,6 +905,17 @@ that could not converge in principle).
   naming no build system, rewrote the 39 call sites in `test_codegen_bundle.py` the suite ran,
   and left the one CUDA build-through row that skips without the compiler driver — red with the
   driver on PATH, found in round 2 by Codex and the security reviewer independently. Enumerate call sites with `git grep`, not with the suite
+- **A mock of a PROCESS-WIDE seam silences the gate the row is about.** A row that stubs
+  `subprocess.run` (or `os.environ`, `shutil.which`) for one unrelated call it does not want —
+  a validator subprocess, a version probe — also stubs every program the code under test runs
+  through it. Issue #644 P1's Build symbol-check row copied a fixture that mocked
+  `subprocess.run` to return 0 for the post-build validator: the compiler the fake build ran
+  was mocked too, so no object existed, and `nm` returned nothing, so the check saw no symbols —
+  a row asserting only that the build failed would have passed while observing no check. **Rule: when a fixture patches a
+  process-wide seam, pass every call it does not mean to stub through to the real one** (match
+  the one argv you want faked, call the saved original otherwise), and assert in the row that
+  the subject saw real input (the object it read is non-empty, the record lists it).
+  Episode: `references/judgment-episodes.md` §"A mocked subprocess silenced the check".
 - **Do not call a sample a pin.** A test placed **outside** the place that defines the set cannot
   claim set identity — it can only sample rejections. **Write in the docstring what is pinned and
   what is sampled**, and if the predicate has several branches (`==` / `startswith` / trailing
