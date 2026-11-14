@@ -1,0 +1,6 @@
+library_version: 1
+library_id: lapack
+language: fortran
+modules: []
+procedures: [dgesv]
+link: [lapack]

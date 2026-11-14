@@ -59,7 +59,9 @@ jobs:
         # supported version, and each linter backend's tests FAIL rather than skip when their tool
         # is absent (`docs/DEVELOPMENT.md` §Fresh-machine setup step 6 says why). MPI is here
         # because the suite's MPI rows fail without it (issue #498): the only rows that still skip
-        # on this runner are the ones `tools/tests/skip_probes.py` exempts.
+        # on this runner are the ones `tools/tests/skip_probes.py` exempts. LAPACK is here for the
+        # same reason: the rows of the `dense_solve_lu` sample link the library the compiler's own
+        # search finds (issue #644).
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -67,7 +69,8 @@ jobs:
             cppcheck \
             jq \
             bubblewrap \
-            libopenmpi-dev openmpi-bin
+            libopenmpi-dev openmpi-bin \
+            liblapack-dev
 
       - name: Allow unprivileged user namespaces
         # Measured on this workflow's first run, which used `ubuntu-latest` (24.04, whose AppArmor

@@ -220,6 +220,17 @@ specs:
     deps_path: spec/component/microphysics/kessler/microphysics_kessler_warm_rain_1d_column/deps.yaml
     official_releases: []
 
+  - spec_kind: component
+    spec_id: dense_solve_lu
+    spec_version: 0.1.0
+    status: controlled_draft
+    domain: numerics
+    family: linear_algebra
+    controlled_spec_path: spec/component/numerics/linear_algebra/dense_solve_lu/controlled_spec.md
+    tests_path: spec/component/numerics/linear_algebra/dense_solve_lu/tests.md
+    deps_path: spec/component/numerics/linear_algebra/dense_solve_lu/deps.yaml
+    official_releases: []
+
   - spec_kind: profile
     spec_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
     spec_version: 0.1.1

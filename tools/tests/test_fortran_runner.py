@@ -1572,7 +1572,7 @@ class HarnessPinTest(unittest.TestCase):
                 self.assertEqual(named, set(_used_harness_ops(ir)))
 
     def test_the_distributed_form_calls_nothing_of_the_harness_the_pin_does_not_ask(self) -> None:
-        """The same for the distributed form (issue #610), over the toy shapes, the 19 bench IRs
+        """The same for the distributed form (issue #610), over the toy shapes, the 20 bench IRs
         and the end-to-end fixtures: the harness names its text holds are exactly
         `_used_harness_ops(ir, distributed=True)`."""
         from tools.tests.test_driver_render import MPI_FIXTURES
@@ -1581,7 +1581,7 @@ class HarnessPinTest(unittest.TestCase):
                   *((sid, builder(), sid) for sid, builder in MPI_FIXTURES.items()),
                   *((p.stem, yaml.safe_load(p.read_text()), p.stem)
                     for p in sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml")))]
-        self.assertEqual(len(shapes), 4 + 5 + 19)
+        self.assertEqual(len(shapes), 4 + 5 + 20)
         for label, ir, sid in shapes:
             with self.subTest(label):
                 txt = render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC)
@@ -1664,7 +1664,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         # The evidence bench builds and runs these runners and never lints them, so the shape of
         # a real physics node reached the gate first in a billed run.
         paths = sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml"))
-        self.assertEqual(len(paths), 19)
+        self.assertEqual(len(paths), 20)
         for harness, _target in _FORMS:
             for path in paths:
                 with self.subTest(path.stem, harness=harness):

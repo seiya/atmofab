@@ -348,9 +348,9 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
     def test_every_suite_is_migrated(self) -> None:
         entries = self._entries()
-        # a tests.md of every kind that has one: the three harnesses and the 19 physics nodes
+        # a tests.md of every kind that has one: the three harnesses and the 20 physics nodes
         self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 3)
-        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 22)
+        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 23)
         self.assertEqual(suites_unmigrated(entries, REPO), [])
 
     def test_each_physics_node_has_a_transcription(self) -> None:

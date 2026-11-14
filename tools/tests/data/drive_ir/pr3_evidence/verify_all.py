@@ -22,11 +22,13 @@ def deps_of(ir,sid):
     return out
 def one(f):
     sid=os.path.basename(f)[:-5]
-    ir=yaml.safe_load(open(f))
-    if sid in SP: model,deps=SP[sid]; model=model or latest('component',sid)
+    ir=yaml.safe_load(open(f)); lib=[]
+    # issue #644 P2: the hand-written model, linked against the declared `external library`
+    if sid=='dense_solve_lu': model=f'{S}/models/{sid}_model.f90'; deps=[]; lib=['--library','lapack']
+    elif sid in SP: model,deps=SP[sid]; model=model or latest('component',sid)
     elif sid in('shallow_water2d_channel','advdiff1d_linear'): model=f'{S}/models/{sid}_model.f90'; deps=deps_of(ir,sid)
     else: model=latest('component',sid); deps=deps_of(ir,sid)
-    cmd=[sys.executable,f'{S}/verify_spec.py',f,'--model',model]+sum([['--dep',d] for d in deps],[])
+    cmd=[sys.executable,f'{S}/verify_spec.py',f,'--model',model]+sum([['--dep',d] for d in deps],[])+lib
     r=subprocess.run(cmd,capture_output=True,text=True,env={**os.environ,'PYTHONPATH':'.'})
     lines=[l for l in r.stdout.splitlines() if l.startswith(('GATE','TESTS','  MOVED'))]
     return sid,r.returncode,lines,r.stderr[-400:] if r.returncode else ''

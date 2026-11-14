@@ -1,0 +1,119 @@
+# Issue #644 P2: the seeded defects of the hand-written model `models/dense_solve_lu_model.f90`,
+# as text replacements (each `old` occurs exactly once in the model). `by` is the set of tests
+# of the hand IR `ir/dense_solve_lu.yaml` whose status the defect moves, measured against LAPACK
+# 3.10 and pinned by `tools/tests/test_dense_solve_lu_sample.py`; a row with `build` moves no
+# test and is refused by that post-build library symbol check instead
+# (`tools/external_library.py` `symbol_check`). By hand, one row at a time:
+#   PYTHONPATH=. python3 tools/tests/data/drive_ir/pr3_evidence/verify_spec.py \
+#     tools/tests/data/drive_ir/pr3_evidence/ir/dense_solve_lu.yaml \
+#     --model tools/tests/data/drive_ir/pr3_evidence/models/dense_solve_lu_model.f90 \
+#     --library lapack --mutate '<old>=><new>'
+
+transposed-matrix:
+  title: the library is handed the transposed matrix
+  by: [l0_declared_solution_pass]
+  patches:
+    - old: "    lu = a\n"
+      new: "    lu = transpose(a)\n"
+
+ignored-status:
+  title: the library's status is not read; `solved` is true after every call
+  by: [l0_singular_xfail]
+  patches:
+    - old: "    solved = (info == 0)\n"
+      new: "    solved = .true.\n"
+
+status-compared-with-order:
+  title: >-
+    `solved` is false only when the library's status equals the order (a zero LAST pivot), so a
+    zero pivot met earlier is reported as solved
+  by: [l0_singular_xfail]
+  patches:
+    - old: "    solved = (info == 0)\n"
+      new: "    solved = (info /= n)\n"
+
+wrong-leading-dimension:
+  title: >-
+    the copy of the matrix is kept in storage with one row more than the leading dimension
+    passed to the library (zero-filled, so the run is deterministic and reads no element outside
+    the storage)
+  # `l0_singular_xfail` moves too: the matrix the library reads from the misaddressed storage of
+  # `l0_singular_n2` is not singular.
+  by: [l0_declared_solution_pass, l0_circulant_family_pass, l0_singular_xfail]
+  patches:
+    - old: "    allocate (lu(n, n), rhs(n, 1), ipiv(n))\n    lu = a\n"
+      new: "    allocate (lu(n + 1, n), rhs(n, 1), ipiv(n))\n    lu = 0.0_dp\n    lu(1:n, :) = a\n"
+
+inputs-overwritten:
+  title: >-
+    `a` and `b` are handed to the library in place of copies, through an interface block that
+    declares them inputs only; the library leaves its factors in `a` and the solution in `b`
+  by: [l0_declared_solution_pass, l0_circulant_family_pass]
+  patches:
+    - old: "      real(dp), intent(inout) :: a(lda, n)\n"
+      new: "      real(dp), intent(in) :: a(lda, n)\n"
+    - old: "      real(dp), intent(inout) :: b(ldb, nrhs)\n"
+      new: "      real(dp), intent(in) :: b(ldb, nrhs)\n"
+    - old: "    call dgesv(n, 1, lu, n, ipiv, rhs, n, info)\n"
+      new: "    call dgesv(n, 1, a, n, ipiv, b, n, info)\n"
+    - old: "    if (solved) x = rhs(:, 1)\n"
+      new: "    if (solved) x = b\n"
+
+library-never-reached:
+  title: >-
+    the model factorizes and solves in its own source, by the elimination with partial pivoting
+    the library performs, and references no procedure of the declared library
+  by: []
+  build: library_declared_unused
+  patches:
+    - old: |2
+          interface
+            subroutine dgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
+              import :: dp
+              implicit none
+              integer, intent(in) :: n
+              integer, intent(in) :: nrhs
+              integer, intent(in) :: lda
+              integer, intent(in) :: ldb
+              real(dp), intent(inout) :: a(lda, n)
+              integer, intent(out) :: ipiv(n)
+              real(dp), intent(inout) :: b(ldb, nrhs)
+              integer, intent(out) :: info
+            end subroutine dgesv
+          end interface
+
+      new: ""
+    - old: "    integer :: info\n"
+      new: "    integer :: info\n    integer :: i, k, p\n    real(dp) :: f\n    real(dp) :: row(n)\n"
+    - old: "    call dgesv(n, 1, lu, n, ipiv, rhs, n, info)\n"
+      new: |2
+            info = 0
+            do k = 1, n
+              p = k
+              do i = k + 1, n
+                if (abs(lu(i, k)) > abs(lu(p, k))) p = i
+              end do
+              ipiv(k) = p
+              if (lu(p, k) == 0.0_dp) then
+                info = k
+                exit
+              end if
+              if (p /= k) then
+                row = lu(k, :)
+                lu(k, :) = lu(p, :)
+                lu(p, :) = row
+                f = rhs(k, 1)
+                rhs(k, 1) = rhs(p, 1)
+                rhs(p, 1) = f
+              end if
+              do i = k + 1, n
+                f = lu(i, k) / lu(k, k)
+                lu(i, k:) = lu(i, k:) - f * lu(k, k:)
+                rhs(i, 1) = rhs(i, 1) - f * rhs(k, 1)
+              end do
+            end do
+            if (info == 0) then
+              do k = n, 1, -1
+                rhs(k, 1) = (rhs(k, 1) - sum(lu(k, k + 1:) * rhs(k + 1:, 1))) / lu(k, k)
+              end do
+            end if

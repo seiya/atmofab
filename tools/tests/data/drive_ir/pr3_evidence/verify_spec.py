@@ -6,7 +6,7 @@ evidence, a hand-written transcription of each `tests.md` and not an output of `
 `verify_all.py` runs every node; the kernels are the operator's `workspace/pipelines/`.
 
   PYTHONPATH=. python3 <this file> <ir.yaml> --model <model.f90> [--dep <dep.f90>]...
-      [--gate-only] [--keep <dir>] [--mutate 'old=>new']...
+      [--library <library_id>]... [--gate-only] [--keep <dir>] [--mutate 'old=>new']...
 
 1. `validate_compile_ir_dir` with the repository as root: Compile.static's gates, incl. the
    quantities / expected_outcome / history lines against the real tests.md.
@@ -16,6 +16,11 @@ evidence, a hand-written transcription of each `tests.md` and not an output of `
 
 `--mutate 'old=>new'` replaces text in the model before compiling (repeatable): the same run then
 prints which tests the defect moved; exit status is then always 0 unless the build fails.
+
+`--library <library_id>` (repeatable, issue #644 P2) links the `external library` of that
+declaration (`spec/libraries/<library_id>.yaml`), located by the compiler's own search, as a site
+entry with no directory is (`tools/external_library.py` `resolve`), and runs the binary with the
+loader path the host composes.
 """
 from __future__ import annotations
 
@@ -34,10 +39,13 @@ import yaml
 REPO = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(REPO))
 
+from tools import external_library as xl  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools import validate_pipeline_semantics as vps  # noqa: E402
+from tools.checked_build import target_compiler  # noqa: E402
 from tools import verdict_evaluator  # noqa: E402
 from tools.backends.language.fortran import runner as f_runner  # noqa: E402
+from tools.tests.target_fixtures import FORTRAN_CPU  # noqa: E402
 from tools.tests.test_driver_render import CPU, DATA  # noqa: E402
 
 FLAGS = ["-std=f2008", "-O2", "-fopenmp", "-fcheck=bounds"]
@@ -66,7 +74,19 @@ def gate(ir: dict) -> list[str]:
         return vps.validate_compile_ir_dir(REPO, d)
 
 
-def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str]) -> None:
+def libraries(library_ids: list[str]) -> list:
+    """Each declared library located by the compiler's own search: what a site entry naming no
+    directory resolves to."""
+    from types import SimpleNamespace
+
+    from tools.execution_sites import SiteLibrary
+    site = SimpleNamespace(site_id="local", library=lambda _library_id: SiteLibrary())
+    return [xl.resolve(xl.load_declaration(REPO, i), site, target_compiler(FORTRAN_CPU))
+            for i in library_ids]
+
+
+def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str],
+        resolved: list | tuple = ()) -> None:
     (work / "ir").mkdir()
     (work / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, work / "ir")
@@ -96,11 +116,15 @@ def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str]) 
                        capture_output=True, text=True)
     if r.returncode:
         raise SystemExit("compile runner: " + r.stderr[-3000:])
-    subprocess.run(["gfortran", *FLAGS, *objs, "runner.o", "-o", "bin"], cwd=work, check=True,
-                   capture_output=True)
+    link = xl.make_values(target_compiler(FORTRAN_CPU), list(resolved))[1].split()
+    r = subprocess.run(["gfortran", *FLAGS, *objs, "runner.o", *link, "-o", "bin"], cwd=work,
+                       capture_output=True, text=True, check=False)
+    if r.returncode:
+        raise SystemExit("link: " + r.stderr[-3000:])
     # pass 1 over the base cases, then each continuation case in a process of its own
     # (issue #632, `test_driver_render.second_pass`)
     env = {**os.environ, "OMP_NUM_THREADS": "4"}
+    env.update(xl.loader_env(FORTRAN_CPU, xl.library_dirs(list(resolved)), os.environ))
     ids = sorted(c["case_id"] for c in ir["case"]["test_case_set"]
                  if pe.RESTART_CASE_KEY not in c)
     proc = subprocess.run([str(work / "bin"), "--cases", str(work / "ir" / "spec.ir.yaml"), *ids],
@@ -119,6 +143,7 @@ def main() -> int:
     ap.add_argument("ir")
     ap.add_argument("--model")
     ap.add_argument("--dep", action="append", default=[])
+    ap.add_argument("--library", action="append", default=[])
     ap.add_argument("--gate-only", action="store_true")
     ap.add_argument("--keep")
     ap.add_argument("--mutate", action="append", default=[])
@@ -136,7 +161,8 @@ def main() -> int:
         shutil.rmtree(base)
     base.mkdir(parents=True, exist_ok=True)
     try:
-        run(ir, Path(a.model).resolve(), [Path(d).resolve() for d in a.dep], base, a.mutate)
+        run(ir, Path(a.model).resolve(), [Path(d).resolve() for d in a.dep], base, a.mutate,
+            libraries(a.library))
         records = pe.evaluate_primary_predicates(ir, base / "run")
         verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
         expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
