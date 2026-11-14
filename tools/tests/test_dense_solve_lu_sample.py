@@ -11,7 +11,8 @@ predicate is evaluated by the host evaluator. The rows pin that
   edit of the hand IR that stops judging one of them is red here. `tests.md` is held to the
   hand IR by `test_transcription_compile_static_accepts_dense_solve_lu`
   (`test_spec_corpus_versions.py`), which compares the test ids, outcomes and quantities and
-  no bound: a bound widened in `tests.md` alone is red nowhere;
+  neither a case nor a bound: a case changed or a bound widened in `tests.md` alone is red
+  nowhere;
 * a model that never reaches the library passes the suite and is refused by the post-build
   symbol check, the one thing that tells it from a conforming model;
 * a source that calls the library the way the leaf is told to
