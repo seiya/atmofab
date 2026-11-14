@@ -35,7 +35,7 @@ In your tree: `SEVERITY_RUBRIC.md` (document key `severity_rubric_document`).
 **Generated CodegenBundle under review (the producer's output — do not re-author it, judge it):**
 In your tree: `bundle_manifest.yaml` (document key `bundle_document`) — the CodegenBundle document without `files[].content` — and each file it lists, holding that entry's full `content`, at its `logical_path`.
 
-**Dependency facts (host-resolved):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none.
+**Dependency facts (host-resolved):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none. When this node declares external libraries, its `## External libraries` section lists them and what of each a source of this node may reach. {{language:external_library_use}}
 
 Target node_key: <node_key>
 Target step: <step>

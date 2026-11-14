@@ -5662,11 +5662,22 @@ class Conductor:
         except Exception:
             return []
         surface = _resolve_component_dep_surface(self.repo_root, refs.node_key, graph)
-        doc = {
+        doc: dict[str, Any] = {
             "generated_by": "workflow_conductor._write_dependency_surface",
             "consumer_node_key": refs.node_key,
             "dependencies": surface,
         }
+        # The external libraries the node declares (issue #644): ids, modules, procedures.
+        # Present only when it declares one, so no other node's sidecar changes.
+        from tools import external_library as xl
+        try:
+            declared = [xl.load_declaration(self.repo_root, i)
+                        for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
+        except xl.LibraryDeclarationError:
+            declared = []   # the spec-input gate refused it before any phase
+        if declared:
+            doc["libraries"] = [{"library_id": d.library_id, "modules": list(d.modules),
+                                 "procedures": list(d.procedures)} for d in declared]
         path = self.repo_root / refs.ir_ref / "dependency_surface.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -6158,6 +6169,31 @@ class Conductor:
                 f"other. Version-qualify the object/staged/module basenames before allowing "
                 f"multi-version/diamond closures (deterministic_followups.md L6).")
         return closure
+
+    def _external_library_facts(self, refs: NodeRefs) -> str:
+        """The external libraries the node's own deps.yaml declares (issue #644), as the block
+        of `DEPENDENCIES.md` every leaf of the node reads: each library's id, the modules and
+        the external procedures a source of the node may reach. `""` when it declares none.
+        Neutral: the names are the declaration's (`spec/libraries/<id>.yaml`); how a language
+        reaches a module or a procedure is its own fragment's."""
+        from tools import external_library as xl
+        try:
+            declarations = [xl.load_declaration(self.repo_root, i)
+                            for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
+        except xl.LibraryDeclarationError as exc:
+            raise RuntimeError(f"libraries of {refs.node_key}: {exc}") from exc
+        if not declarations:
+            return ""
+        lines = ["## External libraries", "",
+                 "This node's `deps.yaml` declares the external libraries below. Its sources "
+                 "may reach these libraries only, through the modules and procedures listed. "
+                 "Build refuses an object that uses a symbol of another library on the link "
+                 "line, defines a symbol a library exports, or reaches none of a library it "
+                 "declares.", ""]
+        for d in declarations:
+            lines.append(f"- {d.library_id}: modules [{', '.join(d.modules)}]; "
+                         f"procedures [{', '.join(d.procedures)}]")
+        return "\n".join(lines)
 
     def _closure_libraries(self, refs: NodeRefs) -> list[Any]:
         """The external libraries a build of this node links, located at the site the target
@@ -7906,7 +7942,10 @@ class Conductor:
             if name in seeds:
                 raise RuntimeError(f"workshop seeds: two seeds named {name!r}")
             seeds[name] = value
-        for name, text in ((self._WORKSHOP_DEPENDENCIES_SEED, _build_dependency_facts(request)),
+        dependency_facts = "\n\n".join(
+            t for t in (_build_dependency_facts(request).strip(),
+                        self._external_library_facts(refs)) if t)
+        for name, text in ((self._WORKSHOP_DEPENDENCIES_SEED, dependency_facts),
                            (self._WORKSHOP_EXEMPLAR_SEED, _build_exemplar(request))):
             if text.strip():
                 if name in seeds:

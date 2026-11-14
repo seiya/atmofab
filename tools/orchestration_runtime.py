@@ -2590,6 +2590,22 @@ def _stamped_library_files(recorded: Any, computed: Sequence[Mapping[str, Any]]
     return files
 
 
+def _own_library_declarations(repo_root: Path, node_key: str,
+                               spec: str) -> list[dict[str, Any]] | None:
+    """The compile and generate keys' `libraries` member (issue #644): the ids and declaration
+    hashes of the external libraries the node's own deps.yaml declares, whose modules and
+    procedures its leaves are told they may use; None (the member absent, so no key moves)
+    when it declares none."""
+    from tools import external_library as xl
+    try:
+        declarations = [xl.load_declaration(repo_root, i)
+                        for i in xl.node_library_ids(repo_root, spec)]
+    except xl.LibraryDeclarationError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: libraries of {node_key}: {exc}") from exc
+    return xl.declared_identity(declarations) or None
+
+
 def _closure_libraries_member(repo_root: Path, node_key: str, closure_nodes: Sequence[str],
                               resolver: DerivationResolver, *, probe: bool
                               ) -> list[dict[str, Any]] | None:
@@ -3165,7 +3181,7 @@ def phase_derivation_inputs(
                 "controlled_spec": _spec_file_hash(repo_root, profile_ref, "controlled_spec.md"),
             })
         profiles.sort(key=lambda p: p["node_key"])
-        return {
+        compile_inputs: dict[str, Any] = {
             "spec": {
                 "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
                 "tests": _spec_file_hash(repo_root, spec, "tests.md"),
@@ -3180,6 +3196,10 @@ def phase_derivation_inputs(
                 {"node_key": nk, "surface": _published_surface(repo_root, nk, resolver)}
                 for nk in _component_direct_deps(graph, node_key)])),
         }
+        own_libraries = _own_library_declarations(repo_root, node_key, spec)
+        if own_libraries is not None:
+            compile_inputs["libraries"] = own_libraries
+        return compile_inputs
 
     ir = need("ir_ref", ir_ref)
     target = resolver.target
@@ -3195,7 +3215,7 @@ def phase_derivation_inputs(
         harness_nk = _harness_for_key(repo_root, node_key, target)
         from tools.codegen_bundle import harness_capability_manifest_document_for
         manifest = harness_capability_manifest_document_for(harness_nk)
-        return {
+        generate_inputs: dict[str, Any] = {
             "ir": ir_hash,
             "spec": {
                 "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
@@ -3212,6 +3232,10 @@ def phase_derivation_inputs(
             },
             "closure": [_generate_closure_entry(repo_root, nk, resolver) for nk in closure_nodes],
         }
+        own_libraries = _own_library_declarations(repo_root, node_key, spec)
+        if own_libraries is not None:
+            generate_inputs["libraries"] = own_libraries
+        return generate_inputs
 
     if step_token == "build":
         source = need("source_ref", source_ref)

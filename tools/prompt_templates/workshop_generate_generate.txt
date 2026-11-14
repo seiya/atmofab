@@ -23,7 +23,7 @@ In your tree: `harness_capabilities.json`.
 **Target profile (the host's implementation target for this run — hardware, toolchain, parallel backend, execution shape and harness; rule (7) holds you to it, and your `target_lowering_plan` lowers onto it):**
 In your tree: `target_profile.json`.
 
-**Dependency facts (host-resolved):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none.
+**Dependency facts (host-resolved):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none. When this node declares external libraries, its `## External libraries` section lists them and what of each a source of this node may reach. {{language:external_library_use}}
 
 **IR (the lowered intermediate representation — authoritative for signatures, ranks, and the algorithm you implement):**
 In your tree: `spec.ir.yaml` (the default case file of `run`).

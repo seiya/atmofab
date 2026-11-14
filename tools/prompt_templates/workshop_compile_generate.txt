@@ -34,7 +34,7 @@ In your tree: `ir_algorithm_example.yaml`.
 **Reference form of the multi-dimensional state contract:**
 In your tree: `ir_algorithm_2d_example.yaml`.
 
-**Dependency facts (host-resolved — the published-operations catalog and each dependency's published interface):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none.
+**Dependency facts (host-resolved — the published-operations catalog and each dependency's published interface):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none. When this node declares external libraries (`deps.yaml` `libraries`), its `## External libraries` section lists them: the generated sources reach them, and the IR states nothing about them.
 
 Target node_key: <node_key>
 Target step: <step>
