@@ -241,12 +241,14 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         rules, flags = control_file_rules(n.target), checked_flags_for(n.target)
         self.assertEqual(checked["tool_name"], "compile_project")
         self.assertEqual(checked["command"], _build_runtime().build_command(
-            "make", None, jobs, list(execute.checked_build_overrides(
-                str(n.obj_checked), str(bin_checked), "spec_x_runner", rules, flags))))
+            "make", None, jobs, [
+                *execute.library_overrides("", ""), *execute.checked_build_overrides(
+                str(n.obj_checked), str(bin_checked), "spec_x_runner", rules, flags)]))
         self.assertEqual(checked["site"]["remote_command"], _build_runtime().build_command(
-            "make", None, jobs, list(execute.checked_build_overrides(
+            "make", None, jobs, [
+                *execute.library_overrides("", ""), *execute.checked_build_overrides(
                 f"{n.job}/build_checked", f"{n.job}/bin_checked", "spec_x_runner", rules,
-                flags))))
+                flags)]))
         record = n.meta()["checked_build"]
         self.assertEqual((record["command_id"], record["argv"], record["obj_dir"],
                           record["bin_dir"]),
